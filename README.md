@@ -1,65 +1,135 @@
 # Taverna POS
 
-Lokalna aplikacija za kelnerski narachki, meni, naplata i pregled na masi. Proektot prodolzhuva so Node.js i vgradeniot SQLite od postoechkiot kod; nema npm zavisnosti ili poseben server za bazata.
+Lokalna web-aplikacija za restoran: najava na vraboteni, raspored na masi, vnes na narachki, dodatoci, cenovnik i naplata. Raboti na kompjuter, tablet i telefon.
+
+Proektot e izgraden so postoechkata tehnologija: Node.js 24.15+, `node:sqlite`, i obichen HTML/CSS/JavaScript. Nema eksterni npm paketi ili poseben databazen server.
 
 ## Startuvanje
 
-Potreben e Node.js 24.15 ili ponov.
+1. Instaliraj Node.js 24.15 ili ponov.
+2. Vo GitHub Desktop napravi **Open in Terminal** za repo-papkata.
+3. Kopiraj `.env.example` vo `.env` i vnesi lokalni vrednosti ako sakash da gi podesish smetkite za primer.
+4. Startuvaj so:
 
-1. Kopiraj `.env.example` vo `.env` (ne stavaj tajni podatoci vo Git).
-2. Vo terminal otvori ja papkata na proektot i izvrshi `npm start`.
-3. Otvori http://localhost:4175.
+   ```powershell
+   npm start
+   ```
 
-`PORT` i `SQLITE_PATH` se podesuvaat vo `.env`. SQLite nema korisnichko ime ili lozinka. Podrazbiranata baza e `data/taverna.sqlite`; papkata `data` e ignorirana od Git.
+5. Na kompjuterot otvori [http://localhost:4175](http://localhost:4175).
 
-## Najava
+Podrazbiranata baza e `data/taverna.sqlite`. `PORT` i `SQLITE_PATH` mozat da se promenat preku `.env`. SQLite ne koristi databazno korisnichko ime ili lozinka. Podatocite vo `data/` i `.env` se lokalni i ignorirani od Git.
 
-Primer-smetkite se kreiraat ako za niv se postaveni ne-prazni `SEED_*_PASSWORD` environment promenlivi vo `.env`:
+## Prva najava i smetki
 
-| Uloga | Korisnichko ime |
+Najavata bara samo korisnichko ime i lozinka. Ako bazata nema korisnici, se pojavuva prvichno postavuvanje za direktor — isto so korisnichko ime i lozinka; prikazhnoto ime se postavuva od korisnichkoto ime.
+
+Po zelba, cetirite primer-smetki mozat da se kreiraat/azhuriraat ednash so lokalni environment promenlivi. Vo `.env` postavi gi site cetiri vrednosti:
+
+```env
+SEED_KELNER1_PASSWORD=
+SEED_KELNER2_PASSWORD=
+SEED_MENADZER_PASSWORD=
+SEED_DIREKTOR_PASSWORD=
+```
+
+Popolni gi praznite vrednosti so lozinkite shto gi dogovoril sopstvenikot na instalacijata. Koga se vneseni site cetiri, pri sledniot start migracijata ednash gi kreira ili azhurira primer-smetkite, pa potoa ne gi menuva. Lozinkite se hash-iraat so `scrypt`; ne se zapisani vo izvorniot kod ili GitHub.
+
+| Uloga | Korisnichko ime | Sifra |
+|---|---|---|
+| Kelner | `kelner1` | `001` |
+| Kelner | `kelner2` | `002` |
+| Menadzer | `menadzer` | — |
+| Direktor | `direktor` | — |
+
+Smetkite se vo lokalnata databaza. GitHub ja prenesuva aplikacijata, ne SQLite fajlot ili korisnichkite zapisi. Za povekje kompjuteri da rabotat so isti smetki i narachki, site treba da se povrzat na zaednichka server-baza.
+
+## Rabota vo aplikacijata
+
+### Kelner
+
+- Po najava vednash se prikazhuvaat masite.
+- Slobodna masa e zelena; zafatena masa e crvena.
+- Klik na slobodna masa otvora nova narachka. Klik na zafatena prikazhuva aktivnite narachki i dava opcija za nova.
+- Artikli se prebaruvaat po shifra ili ime. Strelicki gore/dolu i Enter rabotat za izbor; kopcheto **Dodadi** e pogodeno za dopir.
+- Sekoj red na narachka e oddelen i ima kolichina, kratka zabeleshka, dodatoci i brishenje.
+- Dodatokot e vrzan za konkretna stavka i se presmetuva po edinica na glavniot artikl.
+- **Zavrshi narachka** ja zachuvuva smetkata, a **Naplati i oslobodi masa** e oddelno dejstvo.
+- Naednash najaveni kelneri gi gledaat osvezhenite sostojbi na masite.
+- Gore desno, vo menito so tri tochki, ima **Log Out**.
+
+### Menadzer i direktor
+
+- Menadzerot ima pregled, masi/narachki i cenovnik.
+- Direktorot ima istite funkcii i upravuvanje so korisnichki smetki.
+- Menadzer/direktor moze da dodava masi i da dodava, menuva ili deaktivira artikli.
+
+## Masi i cenovnik
+
+Pochetniot raspored e O1, O2, K1, K2 i P1. Tipovite O, K i P se dozvoleni so broj 1–99; vo bazata tipot i brojot se koloni, so edinstvenost na kombinacijata.
+
+Primer-artikli se:
+
+- Kujna: sifri 800–899.
+- Shank: sifri 501–599.
+- Dodatoci: sifri 200–299.
+
+Prikazhnite ceni se vo denari. Bazata gi cuva kako celi parichni stotinki. Istoriskite narachki ja zadrzhuvaat sifrata, imeto i cenata od momentot koga bile vneseni. Deaktiviran artikl ne se nudi vo novi narachki.
+
+## Databaza i DBeaver
+
+Lokalniot SQLite fajl e `data/taverna.sqlite`. Vo DBeaver izberi **New Database Connection → SQLite**, pa za Database/File izberi toj fajl. Ako SQLite drajverot nedostiga, dozvoli DBeaver Driver Manager da go instalira. Refresh hireshijata za da se pojavat tabelite.
+
+Tabelite:
+
+| Tabela | Znachење |
 |---|---|
-| Kelner | `kelner1` |
-| Kelner | `kelner2` |
-| Menadzer | `menadzer` |
-| Direktor | `direktor` |
+| `users` | Korisnici, uloga, scrypt sol i hash, aktivnost, sifra na kelner |
+| `dining_tables` | Tip i broj na masa, edinstvena kombinacija |
+| `products` | Jadenja, pijalaci i dodatoci; sifra, tip, cena i aktivnost |
+| `orders` | Masa, kelner, status, vkupna suma, vreme i kluch za sprechuvanje duplo zacuvuvanje |
+| `order_items` | Redovi na narachka, kolichina, zabeleshka i cenovna snimka |
+| `order_item_addons` | Dodatoci vrzani za konkreten red i cenovna snimka |
+| `payments` | Naplata, iznos, vreme i vraboten shto ja evidentiral |
+| `schema_migrations` | Verzii na izvrsheni promeni na shemata i inicijalnite smetki |
 
-Lozinkite se hash-iraat so scrypt i ne se chitaat od Git. Primer za promenlivite ima vo `.env.example`; vistinskite vrednosti vnesi gi samo vo lokalniot `.env`. Koga se postaveni site 4 promenlivi, ednokratna migracija gi kreira ili azhurira ovie primer-smetki, pa potoa ne gi menuva povtorno.
+SQLite stranskite kluchevi i CHECK/UNIQUE ogranichuvanjata validiraat relacii, opsezi, kolichini i sifri. Narachkata, stavkite, dodatocite i vkupnata suma se zachuvuvaat vo transakcija. Serverot sam ja presmetuva sumata.
 
-Na nova instalacija, primer-smetkite se dodavaat samo koga nivnite lozinki se postaveni vo lokalniot `.env`. Smetkite ne se prenesuvaat kako SQLite fajl preku GitHub. Za povekje kompjuteri da gi koristat istite narachki, aplikacijata treba da se povrze so zaednichka server baza.
+Vo DBeaver postoeshe i aktivna PostgreSQL konekcija `localhost:5432/hospital_db`, no nejzinata `public` schema nemashe tabeli. Ne e doprena; aplikacijata koristi SQLite za da ostane vo tehnologijata na postoechkiot proekt.
 
-## Funkcii
+## Telefon i lokalna mreza
 
-- Kelnerot po najava vednash go gleda rasporedot na masite. Slobodnite se zeleni, zafatenite crveni.
-- Pochetni masi: O1, O2, K1, K2 i P1. Menaџer/direktor moze da dodava tip O/K/P so broj 1–99.
-- Prebaruvanje na jadenja i pijalaci po shifra ili ime, izbor so strelicki/Enter ili dopir, kolichini, zabeleshki i povekje posebni redovi.
-- Dodatoci se vrzani za konkretna stavka i se presmetuvaat po glaven artikl.
-- Zavrshena narachka se zapishuva transakciski; naplatata e oddelna i ja osloboduva masata.
-- SSE gi osvezhuva masite kaj najavenite korisnici.
-- Direktorot upravuva so smetki; menadzerot i direktorot imaat pregled i cenovnik.
-- Tri tochki gore desno sodrzhat **Log Out**.
-- Interfejsot e prilagoden za desktop, tablet i telefon.
+1. Kompjuterot i telefonot neka bidat na istata Wi-Fi mreza.
+2. Startuvaj `npm start` na kompjuterot i ostavi go terminalot da raboti.
+3. Vo terminalot najdi ja adresata shto pocnuva so `Telefon:` i otvori ja na telefonot, na primer `http://10.0.0.15:4175`.
 
-## Baza i DBeaver
+Ne koristi `localhost` na telefonot: toa se odnesuva na samiot telefon. Ako LAN-linkot ne raboti, dozvoli Node.js vo Windows Firewall na privatnata mreza i proveri dali telefonot e na istata mreza. IP-adresata moze da se smeni, pa koristi ja tekovnata adresa od terminalot.
 
-Vo DBeaver napravi nova SQLite konekcija i za database file izberi `data/taverna.sqlite` od korenot na proektot. Ako SQLite drajverot ne e instaliran vo DBeaver, dozvoli mu na DBeaver da go prezeme od Driver Manager. Napravi refresh za da gi vidish tabelite.
+## Migracii
 
-Tabeli: `users`, `dining_tables`, `products`, `orders`, `order_items`, `order_item_addons`, `payments` i `schema_migrations`. Relaciite se so strani kluchevi; se proveruvaat opsezite na shifrite, tipovite, kolichinite i edinstvenosta na masite. Ceni se zapishuvaat vo stotinki kako celi broevi. Stavkite i dodatocite cuvaat snimka od shifra, ime i cena za istorijata.
+Serverot gi primenuva migraciite ednash po verzija pri startuvanje:
 
-Pri startuvanje se izvrshuva osnovnata schema i migraciite vo `migrations/` ednash po verzija. Pochetni primeri: 5 masi, 4 jadenja, 4 pijalaci, 3 dodatoci. Primer cenite se vo denari.
+1. `migrations/001_initial_schema.sql` — osnovni tabeli, ogranicuvanja i indeksi.
+2. `migrations/002_add_order_indexes.sql` — indeksi za stavki, dodatoci i naplati.
+3. Migracija verzija 3 vo `server.mjs` — ednokratno kreiranje/azhuriranje primer-smetki od lokalni `.env` vrednosti.
 
-## Promena na meni i masi
+Starata SQLite data-file e ignorirana od Git. Ako se kopira proektot na drug kompjuter, migraciite se izvrshuvaat nad negovata lokalna baza.
 
-Menaџerot i direktorot vo **Cenovnik** dodavaat, menuvaat ili deaktiviraat artikli. Shifri: kujna 800–899, shank 501–599, dodatoci 200–299. Deaktiviran artikl ne se nudi za nova narachka, a starite narachki go zadrzhuvaat zacuvaniot opis i cena. Na ekranot **Masi i narachki** dodadi O/K/P masa so broj 1–99; duplikatite se odbivaat.
+## Git commit hronologija
 
-## Telefon
+Slednive tocki ja belezhat rabotata vo redosledot vo koj e commit-irana:
 
-Startuvaj ja aplikacijata na kompjuterot i otvori ja prikazhanata LAN adresa (primer `http://192.168.1.20:4175`) na telefon shto e na istata Wi-Fi mreza. Windows Firewall moze da pobara dozvola za privatnata mreza.
+| Commit | Shto e napraveno |
+|---|---|
+| `d3094d5` — Add Taverna POS MVP | Prv Node.js/SQLite MVP: najava i ulogi, ekran za masi, narachki i naplata, pregled za menadzer/direktor i korisnichki smetki. |
+| `0060293` — Add account menu with logout | Dodadeno meni so tri tochki gore desno i **Log Out**. |
+| `e361338` — Build transactional restaurant ordering workflow | POS preraboten so SQLite migracii, artikli i dodatoci, cenovni snimki, narachki vo transakcii, naplata, masi O/K/P, SSE osvezhuvanje i mobilna narachka. |
+| `a32caef` — Use an available default local port | Podrazbiranata porta e promeneta na 4175 za da se izbegne sudirot na 4173. |
+| `d360aa2` — Simplify first-run account setup | Prvichnoto postavuvanje e skrateno na korisnichko ime i lozinka; prikazhnoto ime se postavuva od korisnichkoto ime. |
+| `a1a2ccf` — Configure demo staff accounts from local environment | Dodadeni `.env` promenlivi i kod za bezbedno lokalno podesuvanje primer-smetki, bez lozinki vo Git. |
+| `d2bd8ae` — Seed demo accounts from local environment once | Primer-smetkite se kreiraat/azhuriraat ednash od `.env`, so hash-irani lozinki. |
 
-## Proverki i pretpostavki
+## Proverki i ogranicuvanja
 
-- Vo DBeaver ima aktivna PostgreSQL konekcija `localhost:5432/hospital_db`; javnata schema vo nea e prazna. Aplikacijata sepak koristi SQLite, bidejki postoechkiot kod vekje go koristi i e lokalna odvoena baza za Taverna. PostgreSQL konekcijata ne e doprena.
-- Lozinkite se hash-iraat so scrypt; najavata koristi korisnichko ime. Narachkite se vrzuvaat so korisnik od sesijata.
-- Serverot ja presmetuva cenata od aktivnite artikli i ja zachuvuva so cenovnite snimki vo edna transakcija.
-- Napraveni se sintaksni proverki za JavaScript i proverka na SQLite shemata/pochetni podatoci. Okolinata ja blokirashe HTTP loopback proverката; aplikacijata startuva na slobodna porta.
-
-Pred javno komercijalno objavuvanje treba HTTPS i plan za bekap.
+- JavaScript sintaksata e proverena so `node --check`.
+- Sveza SQLite baza e startuvana so migraciite; se provereni tabelite, pochetniot raspored i hash-iranjeto na primer-smetkite.
+- Narachkite i pregledot se za lokalna rabota/LAN. Za produkcija so oddaleni lokacii treba centralna databaza, HTTPS, bekap i dopolnitelna bezbednosna proverka.
