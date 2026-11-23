@@ -1,0 +1,13 @@
+{
+  "name": "taverna-pos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local restaurant ordering and management MVP",
+  "engines": {
+    "node": ">=24.15"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  }
+}
