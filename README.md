@@ -8,7 +8,7 @@ Potreben e Node.js 24.15 ili ponov.
 
 1. Kopiraj `.env.example` vo `.env` (ne stavaj tajni podatoci vo Git).
 2. Vo terminal otvori ja papkata na proektot i izvrshi `npm start`.
-3. Otvori http://localhost:4173.
+3. Otvori http://localhost:4175.
 
 `PORT` i `SQLITE_PATH` se podesuvaat vo `.env`. SQLite nema korisnichko ime ili lozinka. Podrazbiranata baza e `data/taverna.sqlite`; papkata `data` e ignorirana od Git.
 
@@ -51,7 +51,7 @@ Menaџerot i direktorot vo **Cenovnik** dodavaat, menuvaat ili deaktiviraat arti
 
 ## Telefon
 
-Startuvaj ja aplikacijata na kompjuterot i otvori ja prikazhanata LAN adresa (primer `http://192.168.1.20:4173`) na telefon shto e na istata Wi-Fi mreza. Windows Firewall moze da pobara dozvola za privatnata mreza.
+Startuvaj ja aplikacijata na kompjuterot i otvori ja prikazhanata LAN adresa (primer `http://192.168.1.20:4175`) na telefon shto e na istata Wi-Fi mreza. Windows Firewall moze da pobara dozvola za privatnata mreza.
 
 ## Proverki i pretpostavki
 
