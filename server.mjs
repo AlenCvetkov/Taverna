@@ -69,20 +69,30 @@ if (db.prepare('SELECT COUNT(*) AS n FROM products').get().n === 0) {
     [200,'Кашкавал','addon',6000],[201,'Сланина','addon',8000],[202,'Дополнителен сос','addon',3000],
   ]) seed.run(...row);
 }
-// Optional demo-account passwords come from the untracked .env file, never from source control.
+// Demo-account passwords come only from the untracked .env file, never from source control.
 const demoAccounts = [
   ['Kelner 1','kelner1','waiter','001','SEED_KELNER1_PASSWORD'],
   ['Kelner 2','kelner2','waiter','002','SEED_KELNER2_PASSWORD'],
   ['Menadzer','menadzer','manager',null,'SEED_MENADZER_PASSWORD'],
   ['Direktor','direktor','director',null,'SEED_DIREKTOR_PASSWORD'],
 ];
-const seedAccount = db.prepare('INSERT OR IGNORE INTO users(name,username,role,staff_code,salt,password_hash) VALUES(?,?,?,?,?,?)');
-for (const [name,username,role,staffCode,passwordEnv] of demoAccounts) {
-  const password = process.env[passwordEnv];
-  if (!password || db.prepare('SELECT 1 FROM users WHERE username=?').get(username)) continue;
-  const salt = randomBytes(16).toString('hex');
-  const hash = await scrypt(password,salt,64,{N:32768,r:8,p:1,maxmem:64*1024*1024});
-  seedAccount.run(name,username,role,staffCode,salt,hash.toString('hex'));
+const configuredPasswords = demoAccounts.map(([, , , , passwordEnv]) => process.env[passwordEnv] || '');
+if (configuredPasswords.every(Boolean) && !db.prepare('SELECT version FROM schema_migrations WHERE version=3').get()) {
+  const preparedAccounts = [];
+  for (let i=0;i<demoAccounts.length;i++) {
+    const [name,username,role,staffCode] = demoAccounts[i];
+    const salt = randomBytes(16).toString('hex');
+    const hash = await scrypt(configuredPasswords[i],salt,64,{N:32768,r:8,p:1,maxmem:64*1024*1024});
+    preparedAccounts.push({name,username,role,staffCode,salt,hash:hash.toString('hex')});
+  }
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const upsertAccount = db.prepare(`INSERT INTO users(name,username,role,staff_code,salt,password_hash) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(username) DO UPDATE SET name=excluded.name,role=excluded.role,staff_code=excluded.staff_code,salt=excluded.salt,password_hash=excluded.password_hash,active=1`);
+    for (const a of preparedAccounts) upsertAccount.run(a.name,a.username,a.role,a.staffCode,a.salt,a.hash);
+    db.prepare('INSERT INTO schema_migrations(version) VALUES(3)').run();
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 const sessions = new Map();
 const streams = new Set();

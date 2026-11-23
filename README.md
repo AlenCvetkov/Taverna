@@ -23,9 +23,9 @@ Primer-smetkite se kreiraat ako za niv se postaveni ne-prazni `SEED_*_PASSWORD` 
 | Menadzer | `menadzer` |
 | Direktor | `direktor` |
 
-Lozinkite se hash-iraat so scrypt i ne se chitaat od Git. Primer za promenlivite ima vo `.env.example`; vistinskite vrednosti vnesi gi samo vo lokalniot `.env`. Postoechka smetka ne se resetira avtomatski.
+Lozinkite se hash-iraat so scrypt i ne se chitaat od Git. Primer za promenlivite ima vo `.env.example`; vistinskite vrednosti vnesi gi samo vo lokalniot `.env`. Koga se postaveni site 4 promenlivi, ednokratna migracija gi kreira ili azhurira ovie primer-smetki, pa potoa ne gi menuva povtorno.
 
-Na nova instalacija, primer-smetkite se dodavaat samo koga nivnite lozinki se postaveni vo lokalniot `.env`. Smetkite ne se prenesuvaat kako SQLite fajl preku GitHub. Za povekje kompjuteri da gi koristat istite narachki i smetki, aplikacijata treba da se povrze so zaednichka server baza.
+Na nova instalacija, primer-smetkite se dodavaat samo koga nivnite lozinki se postaveni vo lokalniot `.env`. Smetkite ne se prenesuvaat kako SQLite fajl preku GitHub. Za povekje kompjuteri da gi koristat istite narachki, aplikacijata treba da se povrze so zaednichka server baza.
 
 ## Funkcii
 
