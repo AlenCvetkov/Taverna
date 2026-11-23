@@ -84,7 +84,9 @@ async function enterApp(user) {
   document.querySelector('#staffrole').textContent = `${roleName(user.role)} · Најавен`;
   document.querySelector('#avatar').textContent = user.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toLocaleUpperCase('mk-MK');
   document.querySelector('#mobile-role').textContent = roleName(user.role);
-  document.querySelector('#logout').addEventListener('click', logout, { once: true });
+  document.querySelector('#account-menu-name').textContent = user.name;
+  document.querySelector('#account-menu-email').textContent = user.email || '';
+  closeAccountMenu();
   renderNav();
   await loadTables();
   if (user.role === 'waiter') renderTables();
@@ -95,6 +97,29 @@ async function logout() {
   try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch { /* Local session will expire if the server is offline. */ }
   renderLogin();
 }
+
+function closeAccountMenu() {
+  const menu = document.querySelector('#account-menu');
+  const button = document.querySelector('#account-menu-button');
+  if (!menu || !button) return;
+  menu.hidden = true;
+  button.setAttribute('aria-expanded', 'false');
+}
+
+document.querySelector('#account-menu-button').addEventListener('click', (event) => {
+  event.stopPropagation();
+  const button = event.currentTarget;
+  const menu = document.querySelector('#account-menu');
+  menu.hidden = !menu.hidden;
+  button.setAttribute('aria-expanded', String(!menu.hidden));
+});
+document.querySelector('#menu-logout').addEventListener('click', logout);
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.account-menu-wrap')) closeAccountMenu();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeAccountMenu();
+});
 
 function renderNav(activeLabel) {
   const items = navItems[currentUser.role];
