@@ -83,14 +83,30 @@ Tabelite:
 
 | Tabela | Znachење |
 |---|---|
-| `users` | Korisnici, uloga, scrypt sol i hash, aktivnost, sifra na kelner |
-| `dining_tables` | Tip i broj na masa, edinstvena kombinacija |
-| `products` | Jadenja, pijalaci i dodatoci; sifra, tip, cena i aktivnost |
-| `orders` | Masa, kelner, status, vkupna suma, vreme i kluch za sprechuvanje duplo zacuvuvanje |
-| `order_items` | Redovi na narachka, kolichina, zabeleshka i cenovna snimka |
-| `order_item_addons` | Dodatoci vrzani za konkreten red i cenovna snimka |
-| `payments` | Naplata, iznos, vreme i vraboten shto ja evidentiral |
-| `schema_migrations` | Verzii na izvrsheni promeni na shemata i inicijalnite smetki |
+| `Lice` | Korisnici, ime, najava, uloga, aktivnost; `staff_code` za kelner e tekst 001–099 (tri cifri), so edinstvenost i DB trigger validacija |
+| `Artikl` | Zaednichka osnovna tabela: `id`, `code`, `name`, `category`, `price_minor`, `active` |
+| `Kujna` | Jadenja: `id` povrzan so Artikl, edinstvena `code` 800–899 |
+| `Shank` | Pijalaci: `id` povrzan so Artikl, edinstvena `code` 501–599 |
+| `Dodatok` | Dodatoci: `id` povrzan so Artikl, edinstvena `code` 200–299 |
+| `Masa` | `table_type` O/K/P, `table_number` 1–99; edinstvena kombinacija, prikaz kako O1 |
+| `Narachka` | `table_id` → Masa, `waiter_id` → Lice, vreme, status, `total_minor`, `paid_at`, idempotency key |
+| `StavkaNaNarachka` | `order_id` → Narachka, `product_id` → Artikl, reden broj, kolichina, zachuvani ime/cena/shifra, zabeleshka |
+| `DodatokNaStavka` | `order_item_id` → StavkaNaNarachka, `product_id` → Dodatok, kolichina po edinica i zachuvani ime/cena/shifra |
+| `Naplata` | Masa, vraboten shto naplatil, iznos i vreme |
+| `schema_migrations` | Izvrsheni migracii |
+
+**ID i shifra se razlichni.** Na primer, artiklot so vnatreshno `id=1` mozhe da ima `code=800`; kelner so `id=1` ima `staff_code='001'`. Relaciite koristat ID, a kelnerot gi gleda shifrite. O1, K1 i P1 imaat razlichni ID-a.
+
+Imeto, cenata i aktivnosta za Kujna/Shank/Dodatok se zachuvani ednash vo Artikl. Podtipovite avtomatski se popolnuvaat so trigger pri dodavanje artikl preku aplikacijata ili vo Artikl. Za pregled so site polinja, vo DBeaver otvori **Views → KujnaPregled / ShankPregled / DodatokPregled**. Tie prikazhuvaat `id`, `shifra`, `ime`, `cena_stotinki`, `aktiven`. Za ceni vo denari:
+
+```sql
+SELECT id, shifra, ime, cena_stotinki / 100.0 AS cena_MKD, aktiven
+FROM KujnaPregled;
+```
+
+Cenite/iminjata/aktivnosta se menuvaat vo **Cenovnik** vo aplikacijata ili vo Artikl. Pri direktno menuvaње vo DBeaver vkluchi SQLite foreign-key enforcement; aplikacijata go vkluchuva na sekoja konekcija. Kategorijata ne se menuva na postoechki artikl; deaktiviraj go i kreiraj nov. Starite podatoci se zachuvani vo `Arhiva_*` tabelite i ne se koristat za novi narachki.
+
+Po migracijata vo DBeaver selektiraj **taverna.sqlite** i pritisni **F5**. Stari otvoreni tabovi so angliski iminja zatvori gi i otvori gi novite tabeli.
 
 SQLite stranskite kluchevi i CHECK/UNIQUE ogranichuvanjata validiraat relacii, opsezi, kolichini i sifri. Narachkata, stavkite, dodatocite i vkupnata suma se zachuvuvaat vo transakcija. Serverot sam ja presmetuva sumata.
 
@@ -112,6 +128,8 @@ Serverot gi primenuva migraciite ednash po verzija pri startuvanje:
 2. `migrations/002_add_order_indexes.sql` — indeksi za stavki, dodatoci i naplati.
 3. Migracija verzija 3 vo `server.mjs` — ednokratno kreiranje/azhuriranje primer-smetki od lokalni `.env` vrednosti.
 
+4. `migrations/004_named_restaurant_schema.sql` — preimenuvanje na domenskite tabeli, Kujna/Shank/Dodatok podtipovi, validacija na kelnerski shifri, kataloshki views i zachuvuvanje na istorijata; se primenuva atomski preku `database-schema.mjs`. Verzija 3 za smetkite mozhe da se izvrshi podocna ako `.env` ne bil popolnet.
+
 Starata SQLite data-file e ignorirana od Git. Ako se kopira proektot na drug kompjuter, migraciite se izvrshuvaat nad negovata lokalna baza.
 
 ## Git commit hronologija
@@ -127,9 +145,12 @@ Slednive tocki ja belezhat rabotata vo redosledot vo koj e commit-irana:
 | `d360aa2` — Simplify first-run account setup | Prvichnoto postavuvanje e skrateno na korisnichko ime i lozinka; prikazhnoto ime se postavuva od korisnichkoto ime. |
 | `a1a2ccf` — Configure demo staff accounts from local environment | Dodadeni `.env` promenlivi i kod za bezbedno lokalno podesuvanje primer-smetki, bez lozinki vo Git. |
 | `d2bd8ae` — Seed demo accounts from local environment once | Primer-smetkite se kreiraat/azhuriraat ednash od `.env`, so hash-irani lozinki. |
+| Named restaurant schema (ovaa promena) | Lice, Kujna, Shank, Dodatok, Masa, Narachka, StavkaNaNarachka, DodatokNaStavka; Artikl i Naplata; migracija so zachuvani podatoci, DB validacija na 001–099 i DBeaver pregledi. |
 
 ## Proverki i ogranicuvanja
 
 - JavaScript sintaksata e proverena so `node --check`.
 - Sveza SQLite baza e startuvana so migraciite; se provereni tabelite, pochetniot raspored i hash-iranjeto na primer-smetkite.
 - Narachkite i pregledot se za lokalna rabota/LAN. Za produkcija so oddaleni lokacii treba centralna databaza, HTTPS, bekap i dopolnitelna bezbednosna proverka.
+
+Proverka na imenovanata shema: `node verify-schema.mjs`. Koristi posebna privremena baza i port 4199; proveruva svezi migracii, najava, narachka so dodatok i suma, dvojno prakjanje, naplata, restart i nedozvoleni shifri. Lokalnata postoechka baza e proverena so sporedba na site redovi pred/po migracijata i `PRAGMA foreign_key_check` / `integrity_check`.
