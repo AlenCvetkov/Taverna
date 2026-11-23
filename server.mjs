@@ -1,317 +1,115 @@
 import { createServer } from 'node:http';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { networkInterfaces } from 'node:os';
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 
-const scrypt = promisify(scryptCallback);
+const scrypt = promisify(scryptCb);
 const root = dirname(fileURLToPath(import.meta.url));
-const dataDir = join(root, 'data');
-mkdirSync(dataDir, { recursive: true });
-const db = new DatabaseSync(join(dataDir, 'taverna.sqlite'), { timeout: 5000 });
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    username TEXT NOT NULL UNIQUE,
-    role TEXT NOT NULL CHECK(role IN ('waiter','manager','director')),
-    salt TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS dining_tables (
-    id INTEGER PRIMARY KEY,
-    seats INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'Слободна',
-    guests INTEGER NOT NULL DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS order_items (
-    id INTEGER PRIMARY KEY,
-    table_id INTEGER NOT NULL REFERENCES dining_tables(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    price INTEGER NOT NULL,
-    quantity INTEGER NOT NULL CHECK(quantity > 0)
-  );
-  CREATE TABLE IF NOT EXISTS sales (
-    id INTEGER PRIMARY KEY,
-    table_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL REFERENCES users(id),
-    total INTEGER NOT NULL,
-    items_json TEXT NOT NULL,
-    closed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-`);
-if (db.prepare('SELECT COUNT(*) AS count FROM dining_tables').get().count === 0) {
-  const insert = db.prepare('INSERT INTO dining_tables(id,seats) VALUES(?,?)');
-  for (let id = 1; id <= 12; id++) insert.run(id, id <= 4 ? 2 : id <= 8 ? 4 : 6);
-}
+const dbPath = resolve(process.env.SQLITE_PATH || join(root, 'data', 'taverna.sqlite'));
+mkdirSync(dirname(dbPath), { recursive: true });
+const db = new DatabaseSync(dbPath, { timeout: 5000 });
+db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
 
-const port = Number(process.env.PORT || 4173);
-const sessions = new Map();
-const loginFailures = new Map();
-const menu = [
-  { name: 'Капричиоза', price: 320 },
-  { name: 'Шопска салата', price: 180 },
-  { name: 'Домашна лимонада', price: 120 },
-  { name: 'Еспресо', price: 90 },
-];
-const publicUser = (user) => ({ id: user.id, name: user.name, email: user.username, role: user.role });
-const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
-const json = (response, status, value, headers = {}) => {
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
-  response.end(JSON.stringify(value));
-};
-const bad = (response, status, error) => json(response, status, { error });
-
-async function readBody(request) {
-  let raw = '';
-  for await (const chunk of request) {
-    raw += chunk;
-    if (raw.length > 65536) throw Object.assign(new Error('Барањето е преголемо.'), { status: 413 });
-  }
-  try { return raw ? JSON.parse(raw) : {}; }
-  catch { throw Object.assign(new Error('Невалидни податоци.'), { status: 400 }); }
-}
-
-function cookieValue(request, name) {
-  const cookie = request.headers.cookie?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
-  return cookie ? decodeURIComponent(cookie.slice(name.length + 1)) : '';
-}
-
-function currentUser(request) {
-  const token = cookieValue(request, 'taverna_session');
-  const session = sessions.get(token);
-  if (!session || session.expiresAt < Date.now()) {
-    if (token) sessions.delete(token);
-    return null;
-  }
-  const user = db.prepare('SELECT id,name,username,role,active FROM users WHERE id=?').get(session.userId);
-  if (!user?.active) { sessions.delete(token); return null; }
-  return user;
-}
-
-function requireRole(user, roles, response) {
-  if (!user) { bad(response, 401, 'Најавете се за да продолжите.'); return false; }
-  if (!roles.includes(user.role)) { bad(response, 403, 'Немате дозвола за оваа функција.'); return false; }
-  return true;
-}
-
-function setSessionCookie(response, token, request) {
-  const secure = Boolean(request.socket.encrypted);
-  response.setHeader('Set-Cookie', `taverna_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`);
-}
-
-function tableSnapshot() {
-  return db.prepare(`SELECT t.id,t.seats,t.status,t.guests,
-    COALESCE((SELECT json_group_array(json_object('name',i.name,'price',i.price,'qty',i.quantity)) FROM order_items i WHERE i.table_id=t.id),'[]') AS items
-    FROM dining_tables t ORDER BY t.id`).all().map((table) => ({ ...table, items: JSON.parse(table.items) }));
-}
-
-function overview() {
-  const today = db.prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total,
-    COALESCE(AVG(total),0) AS average FROM sales WHERE date(closed_at,'localtime')=date('now','localtime')`).get();
-  const month = db.prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total,
-    COALESCE(AVG(total),0) AS average FROM sales WHERE strftime('%Y-%m',closed_at,'localtime')=strftime('%Y-%m','now','localtime')`).get();
-  const activeTables = db.prepare("SELECT COUNT(*) AS count FROM dining_tables WHERE status!='Слободна'").get().count;
-  const staff = db.prepare('SELECT COUNT(*) AS count FROM users WHERE active=1').get().count;
-  const perWaiter = db.prepare(`SELECT u.name,COALESCE(SUM(s.total),0) AS total FROM users u LEFT JOIN sales s
-    ON s.user_id=u.id AND date(s.closed_at,'localtime')=date('now','localtime') WHERE u.active=1 AND u.role='waiter'
-    GROUP BY u.id ORDER BY total DESC`).all();
-  const perWaiterMonth = db.prepare(`SELECT u.name,COALESCE(SUM(s.total),0) AS total FROM users u LEFT JOIN sales s
-    ON s.user_id=u.id AND strftime('%Y-%m',s.closed_at,'localtime')=strftime('%Y-%m','now','localtime')
-    WHERE u.active=1 AND u.role='waiter' GROUP BY u.id ORDER BY total DESC`).all();
-  const recent = db.prepare(`SELECT u.name,s.table_id,s.total,s.closed_at FROM sales s JOIN users u ON u.id=s.user_id
-    ORDER BY s.id DESC LIMIT 8`).all();
-  return { today, month, activeTables, staff, perWaiter, perWaiterMonth, recent };
-}
-
-async function handleApi(request, response, url) {
-  const path = url.pathname;
-  const method = request.method || 'GET';
-  const user = currentUser(request);
-  if (['POST', 'PATCH', 'DELETE'].includes(method)) {
-    const origin = request.headers.origin;
-    if (origin && new URL(origin).host !== request.headers.host) return bad(response, 403, 'Барањето е одбиено.');
-  }
-
-  if (path === '/api/status' && method === 'GET') {
-    return json(response, 200, { setupRequired: db.prepare('SELECT COUNT(*) AS count FROM users').get().count === 0 });
-  }
-
-  if (path === '/api/setup' && method === 'POST') {
-    if (db.prepare('SELECT COUNT(*) AS count FROM users').get().count !== 0) return bad(response, 409, 'Почетното поставување е веќе завршено.');
-    const body = await readBody(request);
-    const name = String(body.name || '').trim();
-    const email = normalizeEmail(body.email ?? body.username);
-    const password = String(body.password || '');
-    if (name.length < 2 || name.length > 80) return bad(response, 400, 'Внесете име од најмалку 2 знака.');
-    if (!email) return bad(response, 400, 'Внесете Gmail или email адреса.');
-    if (!password) return bad(response, 400, 'Внесете лозинка.');
-    const salt = randomBytes(16).toString('hex');
-    const hash = await scrypt(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-    if (db.prepare('SELECT COUNT(*) AS count FROM users').get().count !== 0) return bad(response, 409, 'Почетното поставување е веќе завршено.');
-    const result = db.prepare('INSERT INTO users(name,username,role,salt,password_hash) VALUES(?,? ,\'director\',?,?)').run(name, email, salt, hash.toString('hex'));
-    const token = randomBytes(32).toString('base64url');
-    sessions.set(token, { userId: Number(result.lastInsertRowid), expiresAt: Date.now() + 8 * 60 * 60 * 1000 });
-    setSessionCookie(response, token, request);
-    return json(response, 201, { user: publicUser(db.prepare('SELECT id,name,username,role FROM users WHERE id=?').get(result.lastInsertRowid)) });
-  }
-
-  if (path === '/api/login' && method === 'POST') {
-    const ip = request.socket.remoteAddress || 'unknown';
-    const attempts = loginFailures.get(ip) || { count: 0, since: Date.now() };
-    if (Date.now() - attempts.since > 10 * 60 * 1000) { attempts.count = 0; attempts.since = Date.now(); }
-    if (attempts.count >= 8) return bad(response, 429, 'Премногу обиди. Почекајте 10 минути.');
-    const body = await readBody(request);
-    const email = normalizeEmail(body.email ?? body.username);
-    const password = String(body.password || '');
-    const account = db.prepare('SELECT * FROM users WHERE username=? AND active=1').get(email);
-    const candidate = await scrypt(password, account?.salt || '00000000000000000000000000000000', 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-    const valid = account && timingSafeEqual(candidate, Buffer.from(account.password_hash, 'hex'));
-    if (!valid) { attempts.count++; loginFailures.set(ip, attempts); return bad(response, 401, 'Корисничкото име или лозинката не се точни.'); }
-    loginFailures.delete(ip);
-    const token = randomBytes(32).toString('base64url');
-    sessions.set(token, { userId: account.id, expiresAt: Date.now() + 8 * 60 * 60 * 1000 });
-    setSessionCookie(response, token, request);
-    return json(response, 200, { user: publicUser(account) });
-  }
-
-  if (path === '/api/logout' && method === 'POST') {
-    sessions.delete(cookieValue(request, 'taverna_session'));
-    return json(response, 200, { ok: true }, { 'Set-Cookie': 'taverna_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
-  }
-
-  if (path === '/api/me' && method === 'GET') {
-    if (!user) return bad(response, 401, 'Не сте најавени.');
-    return json(response, 200, { user: publicUser(user) });
-  }
-
-  if (path === '/api/tables' && method === 'GET') {
-    if (!requireRole(user, ['waiter', 'manager', 'director'], response)) return;
-    return json(response, 200, { tables: tableSnapshot() });
-  }
-
-  const itemMatch = path.match(/^\/api\/tables\/(\d+)\/items$/);
-  if (itemMatch && method === 'POST') {
-    if (!requireRole(user, ['waiter', 'manager'], response)) return;
-    const tableId = Number(itemMatch[1]);
-    const body = await readBody(request);
-    const product = menu.find((item) => item.name === body.name);
-    const table = db.prepare('SELECT * FROM dining_tables WHERE id=?').get(tableId);
-    if (!table || !product) return bad(response, 404, 'Масата или артиклот не се пронајдени.');
-    const qty = Math.max(1, Math.min(20, Number.parseInt(body.qty, 10) || 1));
-    const existing = db.prepare('SELECT id,quantity FROM order_items WHERE table_id=? AND name=?').get(tableId, product.name);
-    if (existing) db.prepare('UPDATE order_items SET quantity=? WHERE id=?').run(existing.quantity + qty, existing.id);
-    else db.prepare('INSERT INTO order_items(table_id,name,price,quantity) VALUES(?,?,?,?)').run(tableId, product.name, product.price, qty);
-    if (table.status === 'Слободна') db.prepare("UPDATE dining_tables SET status='Заземена',guests=? WHERE id=?").run(Math.min(2, table.seats), tableId);
-    return json(response, 200, { tables: tableSnapshot() });
-  }
-
-  const tableAction = path.match(/^\/api\/tables\/(\d+)\/(send|close)$/);
-  if (tableAction && method === 'POST') {
-    if (!requireRole(user, ['waiter', 'manager'], response)) return;
-    const tableId = Number(tableAction[1]);
-    const action = tableAction[2];
-    const table = db.prepare('SELECT * FROM dining_tables WHERE id=?').get(tableId);
-    if (!table) return bad(response, 404, 'Масата не е пронајдена.');
-    if (action === 'send') {
-      db.prepare("UPDATE dining_tables SET status='Нарачано' WHERE id=?").run(tableId);
-    } else {
-      const items = db.prepare('SELECT name,price,quantity AS qty FROM order_items WHERE table_id=?').all(tableId);
-      if (!items.length) return bad(response, 400, 'Нема артикли за наплата.');
-      const total = items.reduce((sum, item) => sum + item.price * item.qty, 0);
-      db.exec('BEGIN');
-      try {
-        db.prepare('INSERT INTO sales(table_id,user_id,total,items_json) VALUES(?,?,?,?)').run(tableId, user.id, total, JSON.stringify(items));
-        db.prepare('DELETE FROM order_items WHERE table_id=?').run(tableId);
-        db.prepare("UPDATE dining_tables SET status='Слободна',guests=0 WHERE id=?").run(tableId);
-        db.exec('COMMIT');
-      } catch (error) { db.exec('ROLLBACK'); throw error; }
+// Legacy first release used these two tables. Keep existing users and migrate the old floor/order data safely.
+const legacy = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
+const oldTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='dining_tables'").get();
+if (oldTables && !db.prepare('PRAGMA table_info(dining_tables)').all().some(c => c.name === 'table_type')) {
+  for (const name of ['dining_tables','order_items','sales']) {
+    if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name)) {
+      const renamed = `${name}_legacy`;
+      if (!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(renamed)) db.exec(`ALTER TABLE ${name} RENAME TO ${renamed}`);
     }
-    return json(response, 200, { tables: tableSnapshot() });
   }
-
-  if (path === '/api/overview' && method === 'GET') {
-    if (!requireRole(user, ['manager', 'director'], response)) return;
-    return json(response, 200, overview());
+}
+if (legacy) {
+  const cols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  if (!cols.includes('staff_code')) db.exec('ALTER TABLE users ADD COLUMN staff_code TEXT');
+  for (const user of db.prepare('SELECT id,role,staff_code FROM users').all()) {
+    if (!user.staff_code) db.prepare('UPDATE users SET staff_code=? WHERE id=?').run(user.role === 'waiter' ? String(user.id).padStart(3, '0') : null, user.id);
   }
-
-  if (path === '/api/users' && method === 'GET') {
-    if (!requireRole(user, ['director'], response)) return;
-    const users = db.prepare('SELECT id,name,username AS email,role,active,created_at AS createdAt FROM users ORDER BY active DESC,name').all();
-    return json(response, 200, { users });
-  }
-
-  if (path === '/api/users' && method === 'POST') {
-    if (!requireRole(user, ['director'], response)) return;
-    const body = await readBody(request);
-    const name = String(body.name || '').trim();
-    const email = normalizeEmail(body.email ?? body.username);
-    const password = String(body.password || '');
-    const role = String(body.role || '');
-    if (name.length < 2 || name.length > 80) return bad(response, 400, 'Внесете име од најмалку 2 знака.');
-    if (!email) return bad(response, 400, 'Внесете Gmail или email адреса.');
-    if (!password) return bad(response, 400, 'Внесете лозинка.');
-    if (!['waiter','manager','director'].includes(role)) return bad(response, 400, 'Изберете валидна улога.');
-    const salt = randomBytes(16).toString('hex');
-    const hash = await scrypt(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-    try {
-      db.prepare('INSERT INTO users(name,username,role,salt,password_hash) VALUES(?,?,?,?,?)').run(name, email, role, salt, hash.toString('hex'));
-    } catch { return bad(response, 409, 'Ова корисничко име веќе постои.'); }
-    return json(response, 201, { users: db.prepare('SELECT id,name,username AS email,role,active,created_at AS createdAt FROM users ORDER BY active DESC,name').all() });
-  }
-
-  const userMatch = path.match(/^\/api\/users\/(\d+)\/active$/);
-  if (userMatch && method === 'PATCH') {
-    if (!requireRole(user, ['director'], response)) return;
-    const id = Number(userMatch[1]);
-    if (id === user.id) return bad(response, 400, 'Не може да ја исклучите сопствената сметка.');
-    const body = await readBody(request);
-    const active = body.active ? 1 : 0;
-    const target = db.prepare('SELECT id,role,active FROM users WHERE id=?').get(id);
-    if (!target) return bad(response, 404, 'Корисникот не е пронајден.');
-    if (!active && target.role === 'director' && db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='director' AND active=1").get().count <= 1) return bad(response, 400, 'Мора да има најмалку еден активен директор.');
-    db.prepare('UPDATE users SET active=? WHERE id=?').run(active, id);
-    return json(response, 200, { users: db.prepare('SELECT id,name,username AS email,role,active,created_at AS createdAt FROM users ORDER BY active DESC,name').all() });
-  }
-
-  return bad(response, 404, 'API маршрутата не е пронајдена.');
+}
+db.exec('CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+if (!db.prepare('SELECT version FROM schema_migrations WHERE version=1').get()) {
+  db.exec(readFileSync(join(root, 'migrations', '001_initial_schema.sql'), 'utf8'));
+  db.prepare('INSERT INTO schema_migrations(version) VALUES(1)').run();
+}
+db.exec(`
+ CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+ CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL UNIQUE, role TEXT NOT NULL CHECK(role IN ('waiter','manager','director')), salt TEXT NOT NULL, password_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, staff_code TEXT);
+ CREATE UNIQUE INDEX IF NOT EXISTS users_staff_code_unique ON users(staff_code) WHERE staff_code IS NOT NULL;
+ CREATE TABLE IF NOT EXISTS dining_tables(id INTEGER PRIMARY KEY, table_type TEXT NOT NULL CHECK(table_type IN ('O','K','P')), table_number INTEGER NOT NULL CHECK(table_number BETWEEN 1 AND 99), active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)), UNIQUE(table_type,table_number));
+ CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, code INTEGER NOT NULL UNIQUE, name TEXT NOT NULL, category TEXT NOT NULL CHECK(category IN ('kitchen','bar','addon')), price_minor INTEGER NOT NULL CHECK(price_minor>=0), active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)), CHECK((category='kitchen' AND code BETWEEN 800 AND 899) OR (category='bar' AND code BETWEEN 501 AND 599) OR (category='addon' AND code BETWEEN 200 AND 299)));
+ CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, table_id INTEGER NOT NULL REFERENCES dining_tables(id), waiter_id INTEGER NOT NULL REFERENCES users(id), status TEXT NOT NULL CHECK(status IN ('active','paid','cancelled')), total_minor INTEGER NOT NULL DEFAULT 0 CHECK(total_minor>=0), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, paid_at TEXT, idempotency_key TEXT NOT NULL UNIQUE);
+ CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE, line_no INTEGER NOT NULL CHECK(line_no>0), product_id INTEGER REFERENCES products(id), product_code INTEGER NOT NULL, name_snapshot TEXT NOT NULL, unit_price_minor INTEGER NOT NULL CHECK(unit_price_minor>=0), quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 999), note TEXT NOT NULL DEFAULT '', UNIQUE(order_id,line_no));
+ CREATE TABLE IF NOT EXISTS order_item_addons(id INTEGER PRIMARY KEY, order_item_id INTEGER NOT NULL REFERENCES order_items(id) ON DELETE CASCADE, product_id INTEGER REFERENCES products(id), product_code INTEGER NOT NULL, name_snapshot TEXT NOT NULL, unit_price_minor INTEGER NOT NULL CHECK(unit_price_minor>=0), quantity_per_unit INTEGER NOT NULL CHECK(quantity_per_unit BETWEEN 1 AND 999));
+ CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, table_id INTEGER NOT NULL REFERENCES dining_tables(id), received_by INTEGER NOT NULL REFERENCES users(id), amount_minor INTEGER NOT NULL CHECK(amount_minor>0), paid_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+ CREATE INDEX IF NOT EXISTS orders_table_status_idx ON orders(table_id,status);
+ CREATE INDEX IF NOT EXISTS products_search_idx ON products(active,code,name);
+ INSERT OR IGNORE INTO schema_migrations(version) VALUES(1);
+`);
+if (!db.prepare('SELECT version FROM schema_migrations WHERE version=2').get()) {
+  db.exec(readFileSync(join(root, 'migrations', '002_add_order_indexes.sql'), 'utf8'));
+  db.prepare('INSERT INTO schema_migrations(version) VALUES(2)').run();
 }
 
-const server = createServer(async (request, response) => {
-  response.setHeader('X-Content-Type-Options', 'nosniff');
-  response.setHeader('Referrer-Policy', 'same-origin');
-  response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'");
-  const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-  try {
-    if (url.pathname.startsWith('/api/')) return await handleApi(request, response, url);
-    if (request.method !== 'GET') return bad(response, 405, 'Методот не е дозволен.');
-    const files = { '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js' };
-    const filename = files[url.pathname];
-    if (!filename) return bad(response, 404, 'Страницата не е пронајдена.');
-    const body = await readFile(join(root, filename));
-    response.writeHead(200, { 'Content-Type': filename.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    response.end(body);
-  } catch (error) {
-    if (!response.headersSent) bad(response, error.status || 500, error.status ? error.message : 'Настана внатрешна грешка.');
-    else response.destroy();
-    if (!error.status) console.error(error);
-  }
-});
+if (db.prepare('SELECT COUNT(*) AS n FROM dining_tables').get().n === 0) {
+  const ins = db.prepare('INSERT INTO dining_tables(table_type,table_number) VALUES(?,?)');
+  for (const [type, n] of [['O',1],['O',2],['K',1],['K',2],['P',1]]) ins.run(type,n);
+}
+if (db.prepare('SELECT COUNT(*) AS n FROM products').get().n === 0) {
+  const seed = db.prepare('INSERT INTO products(code,name,category,price_minor) VALUES(?,?,?,?)');
+  for (const row of [
+    [800,'Шопска салата','kitchen',18000],[801,'Таверна бургер','kitchen',35000],[802,'Пилешка скара','kitchen',32000],[803,'Помфрит','kitchen',14000],
+    [501,'Еспресо','bar',9000],[502,'Домашна лимонада','bar',12000],[503,'Минерална вода','bar',8000],[504,'Сок од јаболко','bar',11000],
+    [200,'Кашкавал','addon',6000],[201,'Сланина','addon',8000],[202,'Дополнителен сос','addon',3000],
+  ]) seed.run(...row);
+}
+const sessions = new Map();
+const streams = new Set();
+const roleNames = { waiter:'Келнер', manager:'Менаџер', director:'Директор' };
+const send = (res,status,data,headers={}) => { res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}); res.end(JSON.stringify(data)); };
+const fail = (res,status,error) => send(res,status,{error});
+async function body(req) { let raw=''; for await (const part of req) { raw+=part; if(raw.length>100000) throw Object.assign(new Error('Барањето е преголемо.'),{status:413}); } try{return raw?JSON.parse(raw):{};}catch{throw Object.assign(new Error('Невалидни податоци.'),{status:400});} }
+function cookie(req) { const x=req.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith('taverna_session=')); return x?decodeURIComponent(x.slice(16)):''; }
+function me(req) { const s=sessions.get(cookie(req)); if(!s||s.exp<Date.now()){sessions.delete(cookie(req));return null;} const u=db.prepare('SELECT id,name,username,role,staff_code,active FROM users WHERE id=?').get(s.uid); return u?.active?u:null; }
+const pub = u => ({id:u.id,name:u.name,email:u.username,role:u.role,staffCode:u.staff_code});
+function auth(res,u,roles=['waiter','manager','director']) { if(!u){fail(res,401,'Најавете се за да продолжите.');return false;} if(!roles.includes(u.role)){fail(res,403,'Немате дозвола за оваа функција.');return false;}return true; }
+function changed(){ const packet=`event: refresh\ndata: ${Date.now()}\n\n`; for(const r of streams) r.write(packet); }
+function tableData(){return db.prepare(`SELECT t.id,t.table_type AS type,t.table_number AS number,t.active,
+ CASE WHEN EXISTS(SELECT 1 FROM orders o WHERE o.table_id=t.id AND o.status='active') THEN 'occupied' ELSE 'free' END AS status,
+ COALESCE((SELECT SUM(total_minor) FROM orders o WHERE o.table_id=t.id AND o.status='active'),0) AS totalMinor
+ FROM dining_tables t WHERE t.active=1 ORDER BY t.table_type,t.table_number`).all().map(t=>({...t,label:`${t.type}${t.number}`}));}
+function tableOrders(id){ return db.prepare(`SELECT o.id,o.waiter_id AS waiterId,u.name AS waiter,o.created_at AS createdAt,o.total_minor AS totalMinor,
+ json_group_array(json_object('id',i.id,'lineNo',i.line_no,'code',i.product_code,'name',i.name_snapshot,'unitMinor',i.unit_price_minor,'quantity',i.quantity,'note',i.note,'addons',json(COALESCE((SELECT json_group_array(json_object('id',a.id,'code',a.product_code,'name',a.name_snapshot,'unitMinor',a.unit_price_minor,'quantity',a.quantity_per_unit)) FROM order_item_addons a WHERE a.order_item_id=i.id),'[]')))) AS items
+ FROM orders o JOIN users u ON u.id=o.waiter_id LEFT JOIN order_items i ON i.order_id=o.id WHERE o.table_id=? AND o.status='active' GROUP BY o.id ORDER BY o.id`).all(id).map(o=>({...o,items:JSON.parse(o.items).filter(i=>i.id!==null)})); }
+function tx(fn){db.exec('BEGIN IMMEDIATE');try{const x=fn();db.exec('COMMIT');return x;}catch(e){db.exec('ROLLBACK');throw e;}}
+async function api(req,res,url){const p=url.pathname,m=req.method,u=me(req);
+ if(['POST','PATCH','DELETE'].includes(m)&&req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return fail(res,403,'Барањето е одбиено.');
+ if(p==='/api/status'&&m==='GET')return send(res,200,{setupRequired:db.prepare('SELECT COUNT(*) n FROM users').get().n===0});
+ if(p==='/api/setup'&&m==='POST'){if(db.prepare('SELECT COUNT(*) n FROM users').get().n) return fail(res,409,'Почетното поставување е завршено.');const b=await body(req),name=String(b.name||'').trim(),username=String(b.username||'').trim().toLowerCase(),password=String(b.password||'');if(!name||!username||!password)return fail(res,400,'Пополнете ги сите полиња.');const salt=randomBytes(16).toString('hex'),hash=await scrypt(password,salt,64,{N:32768,r:8,p:1,maxmem:64*1024*1024});const id=Number(db.prepare("INSERT INTO users(name,username,role,salt,password_hash) VALUES(?,?,'director',?,?)").run(name,username,salt,hash.toString('hex')).lastInsertRowid);const token=randomBytes(32).toString('base64url');sessions.set(token,{uid:id,exp:Date.now()+28800000});return send(res,201,{user:pub(db.prepare('SELECT * FROM users WHERE id=?').get(id))},{'Set-Cookie':`taverna_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`});}
+ if(p==='/api/login'&&m==='POST'){const b=await body(req),username=String(b.username||b.email||'').trim().toLowerCase(),password=String(b.password||''),account=db.prepare('SELECT * FROM users WHERE username=? AND active=1').get(username);if(!account)return fail(res,401,'Корисничкото име или лозинката не се точни.');const hash=await scrypt(password,account.salt,64,{N:32768,r:8,p:1,maxmem:64*1024*1024});if(!timingSafeEqual(hash,Buffer.from(account.password_hash,'hex')))return fail(res,401,'Корисничкото име или лозинката не се точни.');const token=randomBytes(32).toString('base64url');sessions.set(token,{uid:account.id,exp:Date.now()+28800000});return send(res,200,{user:pub(account)},{'Set-Cookie':`taverna_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`});}
+ if(p==='/api/logout'&&m==='POST'){sessions.delete(cookie(req));return send(res,200,{ok:true},{'Set-Cookie':'taverna_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'});}
+ if(p==='/api/me'&&m==='GET'){if(!auth(res,u))return;return send(res,200,{user:pub(u)});}
+ if(p==='/api/events'&&m==='GET'){if(!auth(res,u))return;res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'});res.write('event: refresh\ndata: connected\n\n');streams.add(res);req.on('close',()=>streams.delete(res));return;}
+ if(p==='/api/tables'&&m==='GET'){if(!auth(res,u))return;return send(res,200,{tables:tableData()});}
+ const one=p.match(/^\/api\/tables\/(\d+)$/);if(one&&m==='GET'){if(!auth(res,u))return;const id=+one[1],t=db.prepare('SELECT id,table_type AS type,table_number AS number FROM dining_tables WHERE id=? AND active=1').get(id);if(!t)return fail(res,404,'Масата не е пронајдена.');return send(res,200,{table:{...t,label:`${t.type}${t.number}`,orders:tableOrders(id)}});}
+ if(p==='/api/products'&&m==='GET'){if(!auth(res,u))return;const q=String(url.searchParams.get('q')||'').trim().toLocaleLowerCase('mk');const kind=url.searchParams.get('kind');const products=db.prepare('SELECT id,code,name,category,price_minor AS priceMinor FROM products WHERE active=1 ORDER BY code').all().filter(x=>(kind==='all'||(kind?x.category===kind:x.category!=='addon'))&&(!q||`${x.code} ${x.name}`.toLocaleLowerCase('mk').includes(q)));return send(res,200,{products});}
+ if(p==='/api/orders'&&m==='POST'){if(!auth(res,u,['waiter','manager']))return;const b=await body(req),tableId=Number(b.tableId),lines=Array.isArray(b.items)?b.items:[],key=String(b.idempotencyKey||'');if(!key||lines.length<1||lines.length>100)return fail(res,400,'Додајте барем еден артикл.');const prior=db.prepare('SELECT id FROM orders WHERE idempotency_key=?').get(key);if(prior)return send(res,200,{orderId:prior.id,tables:tableData(),duplicate:true});try{const orderId=tx(()=>{if(!db.prepare('SELECT id FROM dining_tables WHERE id=? AND active=1').get(tableId))throw Object.assign(new Error('Масата не е пронајдена.'),{status:404});const order=Number(db.prepare("INSERT INTO orders(table_id,waiter_id,status,total_minor,idempotency_key) VALUES(?,?,'active',0,?)").run(tableId,u.id,key).lastInsertRowid);let total=0,lineNo=0;for(const line of lines){const product=db.prepare('SELECT * FROM products WHERE id=? AND active=1 AND category IN (\'kitchen\',\'bar\')').get(Number(line.productId));const qty=Number(line.quantity);if(!product||!Number.isInteger(qty)||qty<1||qty>999)throw Object.assign(new Error('Артикл или количина не се валидни.'),{status:400});const addons=Array.isArray(line.addons)?line.addons:[];let unit=product.price_minor;const itemId=Number(db.prepare('INSERT INTO order_items(order_id,line_no,product_id,product_code,name_snapshot,unit_price_minor,quantity,note) VALUES(?,?,?,?,?,?,?,?)').run(order,++lineNo,product.id,product.code,product.name,product.price_minor,qty,String(line.note||'').slice(0,160)).lastInsertRowid);for(const add of addons){const a=db.prepare("SELECT * FROM products WHERE id=? AND category='addon' AND active=1").get(Number(add.productId)),aq=Number(add.quantity);if(!a||!Number.isInteger(aq)||aq<1||aq>999)throw Object.assign(new Error('Додаток или количина не се валидни.'),{status:400});db.prepare('INSERT INTO order_item_addons(order_item_id,product_id,product_code,name_snapshot,unit_price_minor,quantity_per_unit) VALUES(?,?,?,?,?,?)').run(itemId,a.id,a.code,a.name,a.price_minor,aq);unit+=a.price_minor*aq;}total+=unit*qty;}db.prepare('UPDATE orders SET total_minor=? WHERE id=?').run(total,order);return order;});changed();return send(res,201,{orderId,tables:tableData()});}catch(e){if(e.status)return fail(res,e.status,e.message);throw e;}}
+ const settle=p.match(/^\/api\/tables\/(\d+)\/pay$/);if(settle&&m==='POST'){if(!auth(res,u,['waiter','manager']))return;const id=+settle[1];try{const amount=tx(()=>{const orders=db.prepare("SELECT id,total_minor FROM orders WHERE table_id=? AND status='active'").all(id);const total=orders.reduce((s,o)=>s+o.total_minor,0);if(!orders.length||!total)throw Object.assign(new Error('Нема активна сметка за наплата.'),{status:400});db.prepare("UPDATE orders SET status='paid',paid_at=CURRENT_TIMESTAMP WHERE table_id=? AND status='active'").run(id);db.prepare('INSERT INTO payments(table_id,received_by,amount_minor) VALUES(?,?,?)').run(id,u.id,total);return total;});changed();return send(res,200,{paidMinor:amount,tables:tableData()});}catch(e){if(e.status)return fail(res,e.status,e.message);throw e;}}
+ if(p==='/api/tables'&&m==='POST'){if(!auth(res,u,['manager','director']))return;const b=await body(req),type=String(b.type||''),number=Number(b.number);if(!['O','K','P'].includes(type)||!Number.isInteger(number)||number<1||number>99)return fail(res,400,'Типот мора да биде O, K или P, а бројот од 1 до 99.');try{db.prepare('INSERT INTO dining_tables(table_type,table_number) VALUES(?,?)').run(type,number);}catch{return fail(res,409,'Оваа маса веќе постои.');}changed();return send(res,201,{tables:tableData()});}
+ if(p==='/api/overview'&&m==='GET'){if(!auth(res,u,['manager','director']))return;const sales=db.prepare("SELECT COUNT(*) count,COALESCE(SUM(amount_minor),0) total FROM payments WHERE date(paid_at,'localtime')=date('now','localtime')").get();const open=db.prepare("SELECT COUNT(*) count,COALESCE(SUM(total_minor),0) total FROM orders WHERE status='active'").get();return send(res,200,{salesToday:sales,open,totalStaff:db.prepare('SELECT COUNT(*) n FROM users WHERE active=1').get().n});}
+ if(p==='/api/products'&&m==='POST'){if(!auth(res,u,['manager','director']))return;const b=await body(req),code=Number(b.code),name=String(b.name||'').trim(),category=String(b.category||''),price=Number(b.priceMinor);const range=category==='kitchen'?[800,899]:category==='bar'?[501,599]:category==='addon'?[200,299]:null;if(!range||!Number.isInteger(code)||code<range[0]||code>range[1]||!name||!Number.isSafeInteger(price)||price<0)return fail(res,400,'Проверете категорија, шифра, име и цена.');try{db.prepare('INSERT INTO products(code,name,category,price_minor) VALUES(?,?,?,?)').run(code,name,category,price);}catch{return fail(res,409,'Шифрата веќе постои.');}return send(res,201,{ok:true});}
+ const prod=p.match(/^\/api\/products\/(\d+)$/);if(prod&&m==='PATCH'){if(!auth(res,u,['manager','director']))return;const b=await body(req),id=+prod[1];if(b.active!==undefined)db.prepare('UPDATE products SET active=? WHERE id=?').run(b.active?1:0,id);else{const name=String(b.name||'').trim(),price=Number(b.priceMinor);if(!name||!Number.isSafeInteger(price)||price<0)return fail(res,400,'Проверете име и цена.');db.prepare('UPDATE products SET name=?,price_minor=? WHERE id=?').run(name,price,id);}return send(res,200,{ok:true});}
+ if(p==='/api/users'&&m==='GET'){if(!auth(res,u,['director']))return;return send(res,200,{users:db.prepare('SELECT id,name,username AS email,role,staff_code AS staffCode,active FROM users ORDER BY role,name').all()});}
+ if(p==='/api/users'&&m==='POST'){if(!auth(res,u,['director']))return;const b=await body(req),name=String(b.name||'').trim(),username=String(b.username||'').trim().toLowerCase(),password=String(b.password||''),role=String(b.role||''),staffCode=String(b.staffCode||'').trim();if(!name||!username||!password||!['waiter','manager','director'].includes(role))return fail(res,400,'Пополнете ги полињата со валидни податоци.');if(role==='waiter'&&!/^\d{3}$/.test(staffCode))return fail(res,400,'Шифрата на келнер е три цифри.');const salt=randomBytes(16).toString('hex'),hash=await scrypt(password,salt,64,{N:32768,r:8,p:1,maxmem:64*1024*1024});try{db.prepare('INSERT INTO users(name,username,role,salt,password_hash,staff_code) VALUES(?,?,?,?,?,?)').run(name,username,role,salt,hash.toString('hex'),role==='waiter'?staffCode:null);}catch{return fail(res,409,'Корисничкото име или шифрата веќе постои.');}return send(res,201,{ok:true});}
+ if(p==='/api/overview/recent'&&m==='GET'){if(!auth(res,u,['manager','director']))return;return send(res,200,{recent:db.prepare("SELECT p.amount_minor AS amountMinor,p.paid_at AS paidAt,u.name,t.table_type||t.table_number AS tableLabel FROM payments p JOIN users u ON u.id=p.received_by JOIN dining_tables t ON t.id=p.table_id ORDER BY p.id DESC LIMIT 30").all()});}
+ return fail(res,404,'API маршрутата не е пронајдена.');}
 
-server.listen(port, '0.0.0.0', () => {
-  console.log(`Taverna POS: http://localhost:${port}`);
-  for (const addresses of Object.values(networkInterfaces())) {
-    for (const address of addresses || []) if (address.family === 'IPv4' && !address.internal) console.log(`Telefon na istata Wi-Fi mreza: http://${address.address}:${port}`);
-  }
-});
-
-process.on('SIGINT', () => { db.close(); process.exit(0); });
-process.on('SIGTERM', () => { db.close(); process.exit(0); });
+const server=createServer(async(req,res)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; form-action 'self'; frame-ancestors 'none'");const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);try{if(url.pathname.startsWith('/api/'))return await api(req,res,url);if(req.method!=='GET')return fail(res,405,'Методот не е дозволен.');const files={'/':'index.html','/index.html':'index.html','/app.js':'app.js'};if(!files[url.pathname])return fail(res,404,'Страницата не е пронајдена.');res.writeHead(200,{'Content-Type':url.pathname.endsWith('.js')?'text/javascript; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(await readFile(join(root,files[url.pathname])));}catch(e){if(!res.headersSent)fail(res,e.status||500,e.status?e.message:'Настана внатрешна грешка.');else res.destroy();if(!e.status)console.error(e);}});
+const port=Number(process.env.PORT||4173);server.listen(port,'0.0.0.0',()=>{console.log(`Taverna POS: http://localhost:${port}`);console.log(`SQLite: ${dbPath}`);for(const group of Object.values(networkInterfaces()))for(const a of group||[])if(a.family==='IPv4'&&!a.internal)console.log(`Telefon: http://${a.address}:${port}`);});
+process.on('SIGINT',()=>{db.close();process.exit(0);});process.on('SIGTERM',()=>{db.close();process.exit(0);});

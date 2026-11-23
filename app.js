@@ -1,261 +1,35 @@
-const menu = [
-  { name: 'Капричиоза', price: 320 },
-  { name: 'Шопска салата', price: 180 },
-  { name: 'Домашна лимонада', price: 120 },
-  { name: 'Еспресо', price: 90 },
-];
-const roleNames = { waiter: 'Келнер', manager: 'Менаџер', director: 'Директор' };
-const navItems = {
-  waiter: [['◫', 'Маси и нарачки'], ['◷', 'Моја смена']],
-  manager: [['◫', 'Преглед'], ['♧', 'Маси и нарачки'], ['☷', 'Активности']],
-  director: [['▦', 'Контролна табла'], ['♧', 'Маси и нарачки'], ['♙', 'Корисници']],
-};
-let currentUser = null;
-let tables = [];
-let selectedTable = null;
-let filter = 'Сите';
-
-const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
-const money = (amount) => `${new Intl.NumberFormat('mk-MK').format(Number(amount) || 0)} ден`;
-const roleName = (role) => roleNames[role] || role;
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    ...options,
-    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) },
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    if (response.status === 401 && path !== '/api/login' && path !== '/api/setup') renderLogin();
-    throw new Error(result.error || 'Барањето не успеа.');
-  }
-  return result;
-}
-
-function authShell(title, subtitle, form) {
-  document.querySelector('#app').classList.add('hidden');
-  const auth = document.querySelector('#auth');
-  auth.classList.remove('hidden');
-  auth.innerHTML = `<section class="auth-brand"><div class="brand-lockup"><span class="brand-icon">✳</span><span>Таверна</span></div><div class="auth-copy"><div class="eyebrow">Систем за угостителски објект</div><h1>Услугата започнува со добар ред.</h1><p>Маси, нарачки и преглед на работењето, на едно место.</p></div><div class="auth-note">Локална апликација · Податоците се чуваат на овој компјутер</div></section><section class="auth-form-wrap"><div class="auth-card"><h2>${title}</h2><p class="sub">${subtitle}</p>${form}<div class="auth-security">Секоја сметка има сопствена email адреса и улога. Системот ги проверува дозволите при секое барање.</div></div></section>`;
-}
-
-function renderSetup() {
-  authShell('Постави ја сметката на директор', 'Ова е првото поставување. Создади ја главната сметка; потоа од неа ќе ги додаваш келнерите и менаџерите.', `<form id="setup-form"><div class="field"><label for="setup-name">Име и презиме</label><input id="setup-name" name="name" autocomplete="name" required minlength="2" maxlength="80" placeholder="На пример, Александар Николов"></div><div class="field"><label for="setup-email">Gmail или email</label><input id="setup-email" name="email" type="text" autocomplete="email" required placeholder="ime@gmail.com"><div class="hint">Vnesi ja adresata so koja sakash da se najavuvash.</div></div><div class="field"><label for="setup-password">Лозинка</label><input id="setup-password" name="password" type="password" autocomplete="new-password" required placeholder="Избери лозинка"></div><button class="primary auth-submit" type="submit">Создај директорска сметка</button><div class="auth-error" id="auth-error" role="alert"></div></form>`);
-  document.querySelector('#setup-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    try {
-      const result = await api('/api/setup', { method: 'POST', body: JSON.stringify({ name: form.get('name'), email: form.get('email'), password: form.get('password') }) });
-      await enterApp(result.user);
-    } catch (error) { setAuthError(error.message); }
-  });
-}
-
-function renderLogin() {
-  currentUser = null;
-  document.querySelector('#app').classList.add('hidden');
-  api('/api/status').then((status) => {
-    if (status.setupRequired) return renderSetup();
-    authShell('Добредојде назад', 'Најави се со личната сметка за да продолжиш.', `<form id="login-form"><div class="field"><label for="login-email">Gmail или email</label><input id="login-email" name="email" type="text" autocomplete="email" required autofocus></div><div class="field"><label for="login-password">Лозинка</label><input id="login-password" name="password" type="password" autocomplete="current-password" required></div><button class="primary auth-submit" type="submit">Најави се</button><div class="auth-error" id="auth-error" role="alert"></div></form>`);
-    document.querySelector('#login-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const form = new FormData(event.currentTarget);
-      const button = event.currentTarget.querySelector('button');
-      button.disabled = true;
-      try {
-        const result = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) });
-        await enterApp(result.user);
-      } catch (error) { setAuthError(error.message); button.disabled = false; }
-    });
-  }).catch(() => authShell('Системот не е достапен', 'Провери дали апликацијата работи на компјутерот и обиди се повторно.', '<button class="primary auth-submit" onclick="location.reload()">Обиди се повторно</button>'));
-}
-
-function setAuthError(message) {
-  const target = document.querySelector('#auth-error');
-  if (target) target.textContent = message;
-}
-
-async function enterApp(user) {
-  currentUser = user;
-  document.querySelector('#auth').classList.add('hidden');
-  document.querySelector('#app').classList.remove('hidden');
-  document.querySelector('#staff').textContent = user.name;
-  document.querySelector('#staffrole').textContent = `${roleName(user.role)} · Најавен`;
-  document.querySelector('#avatar').textContent = user.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toLocaleUpperCase('mk-MK');
-  document.querySelector('#mobile-role').textContent = roleName(user.role);
-  document.querySelector('#account-menu-name').textContent = user.name;
-  document.querySelector('#account-menu-email').textContent = user.email || '';
-  closeAccountMenu();
-  renderNav();
-  await loadTables();
-  if (user.role === 'waiter') renderTables();
-  else await renderDashboard(user.role === 'director' ? 'Контролна табла' : 'Преглед');
-}
-
-async function logout() {
-  try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch { /* Local session will expire if the server is offline. */ }
-  renderLogin();
-}
-
-function closeAccountMenu() {
-  const menu = document.querySelector('#account-menu');
-  const button = document.querySelector('#account-menu-button');
-  if (!menu || !button) return;
-  menu.hidden = true;
-  button.setAttribute('aria-expanded', 'false');
-}
-
-document.querySelector('#account-menu-button').addEventListener('click', (event) => {
-  event.stopPropagation();
-  const button = event.currentTarget;
-  const menu = document.querySelector('#account-menu');
-  menu.hidden = !menu.hidden;
-  button.setAttribute('aria-expanded', String(!menu.hidden));
-});
-document.querySelector('#menu-logout').addEventListener('click', logout);
-document.addEventListener('click', (event) => {
-  if (!event.target.closest('.account-menu-wrap')) closeAccountMenu();
-});
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeAccountMenu();
-});
-
-function renderNav(activeLabel) {
-  const items = navItems[currentUser.role];
-  const nav = document.querySelector('#nav');
-  nav.innerHTML = items.map(([icon, label]) => `<button class="${label === activeLabel ? 'active' : ''}" data-label="${esc(label)}"><b>${icon}</b><span class="txt">${esc(label)}</span></button>`).join('');
-  nav.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.label)));
-}
-
-async function navigate(label) {
-  renderNav(label);
-  document.querySelector('#crumb').textContent = label;
-  if (label === 'Маси и нарачки' || label === 'Моја смена') { await loadTables(); renderTables(); }
-  else if (label === 'Корисници') await renderUsers();
-  else if (label === 'Активности') await renderDashboard('Активности');
-  else await renderDashboard(label);
-}
-
-async function loadTables() {
-  const result = await api('/api/tables');
-  tables = result.tables;
-  if (!tables.some((table) => table.id === selectedTable)) selectedTable = tables[0]?.id || null;
-}
-
-function tableHeading(title, subtitle) {
-  return `<div class="heading"><div><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div><div class="date">Ресторан „Таверна“ · Главна сала</div></div>`;
-}
-
-function renderTables() {
-  document.querySelector('#crumb').textContent = 'Маси и нарачки';
-  const title = currentUser.role === 'waiter' ? `Здраво, ${currentUser.name.split(' ')[0]} 👋` : 'Маси и нарачки';
-  const occupied = tables.filter((table) => table.status !== 'Слободна').length;
-  const openSum = tables.reduce((sum, table) => sum + table.items.reduce((subtotal, item) => subtotal + item.price * item.qty, 0), 0);
-  const visibleTables = tables.filter((table) => filter === 'Сите' || (filter === 'Слободни' ? table.status === 'Слободна' : table.status !== 'Слободна'));
-  document.querySelector('#content').innerHTML = `${tableHeading(title, 'Избери маса за да отвориш или продолжиш сметка.')}
-    <div class="stats"><div class="stat"><small>Маси вкупно</small><strong>${tables.length}</strong><em>главна сала</em></div><div class="stat"><small>Слободни</small><strong>${tables.length - occupied}</strong><em>подготвени за гости</em></div><div class="stat"><small>Активни сметки</small><strong>${occupied}</strong><em>во тек</em></div><div class="stat"><small>Отворени сметки</small><strong>${money(openSum)}</strong><em>тековна смена</em></div></div>
-    <div class="workspace"><section class="panel tables-panel"><div class="panelhead"><div><h2>Распоред на маси</h2><p>${tables.length} маси · статусот се зачувува на компјутерот</p></div><div class="filters">${['Сите','Слободни','Заземени'].map((value) => `<button class="${filter === value ? 'active' : ''}" data-filter="${value}">${value}</button>`).join('')}</div></div><div class="legend"><span>Слободна</span><span>Заземена</span><span>Нарачано</span></div><div class="grid">${visibleTables.map((table) => `<button class="table ${table.status === 'Заземена' ? 'occupied' : table.status === 'Нарачано' ? 'ordered' : ''} ${selectedTable === table.id ? 'selected' : ''}" data-table="${table.id}"><b>Маса ${String(table.id).padStart(2, '0')}</b><small>◉ ${table.status === 'Слободна' ? `${table.seats} места` : `${table.guests} гости`}</small><span class="state">${esc(table.status)}</span>${table.items.length ? `<div class="amount">${money(table.items.reduce((sum, item) => sum + item.price * item.qty, 0))}</div>` : ''}</button>`).join('')}</div></section>${renderOrder() ?? ''}</div>`;
-  document.querySelectorAll('[data-filter]').forEach((button) => button.addEventListener('click', () => { filter = button.dataset.filter; renderTables(); }));
-  document.querySelectorAll('[data-table]').forEach((button) => button.addEventListener('click', () => { selectedTable = Number(button.dataset.table); renderTables(); }));
-  bindOrderActions();
-}
-
-function renderOrder() {
-  const table = tables.find((item) => item.id === selectedTable);
-  if (!table) return '<section class="panel order"><div class="orderhead"><h2>Нарачка</h2><small>Изберете маса</small></div><div class="empty">Изберете маса од распоредот</div></section>';
-  const total = table.items.reduce((sum, item) => sum + item.price * item.qty, 0);
-  return `<section class="panel order"><div class="orderhead"><h2>Маса ${String(table.id).padStart(2, '0')}</h2><small>${table.status === 'Слободна' ? `${table.seats} места · нова сметка` : `${table.guests} гости · ${esc(table.status)}`}</small></div><div class="orderbody">${table.items.length ? table.items.map((item) => `<div class="lineitem"><div class="qty"><b>${item.qty}×</b><span>${esc(item.name)}</span></div><strong>${money(item.price * item.qty)}</strong></div>`).join('') : '<div class="empty">Нема додадени артикли</div>'}</div><div class="quick"><h3>ДОДАЈ АРТИКЛ</h3><div class="products">${menu.map((item) => `<button class="product" data-product="${esc(item.name)}"><b>${esc(item.name)}　＋</b><span>${money(item.price)}</span></button>`).join('')}</div></div><div class="orderfoot"><div class="total"><span>Вкупно</span><strong>${money(total)}</strong></div><button class="primary" data-action="send" ${table.items.length ? '' : 'disabled'}>Испрати во кујна</button><button class="secondary" data-action="close" ${table.items.length ? '' : 'disabled'}>Наплати сметка</button></div></section>`;
-}
-
-function bindOrderActions() {
-  document.querySelectorAll('[data-product]').forEach((button) => button.addEventListener('click', async () => {
-    try { await api(`/api/tables/${selectedTable}/items`, { method: 'POST', body: JSON.stringify({ name: button.dataset.product }) }); await refreshTables(); }
-    catch (error) { notify(error.message); }
-  }));
-  document.querySelector('[data-action="send"]')?.addEventListener('click', async () => {
-    try { await api(`/api/tables/${selectedTable}/send`, { method: 'POST', body: '{}' }); await refreshTables(); notify('Нарачката е означена како испратена.'); }
-    catch (error) { notify(error.message); }
-  });
-  document.querySelector('[data-action="close"]')?.addEventListener('click', async () => {
-    if (!confirm('Да ја затворам и наплатам оваа сметка?')) return;
-    try { await api(`/api/tables/${selectedTable}/close`, { method: 'POST', body: '{}' }); await refreshTables(); notify('Сметката е затворена и зачувана.'); }
-    catch (error) { notify(error.message); }
-  });
-}
-
-async function refreshTables() { await loadTables(); renderTables(); }
-
-function statsMarkup(items) {
-  return `<div class="stats">${items.map(([label, value, note]) => `<div class="stat"><small>${esc(label)}</small><strong>${esc(value)}</strong><em>${esc(note)}</em></div>`).join('')}</div>`;
-}
-
-async function renderDashboard(label) {
-  const report = await api('/api/overview');
-  const isDirector = currentUser.role === 'director';
-  const monthly = isDirector;
-  const figures = monthly ? report.month : report.today;
-  const stats = [
-    [monthly ? 'Продажба овој месец' : 'Продажба денес', money(figures.total), `${figures.count} затворени сметки`],
-    ['Активни сметки', String(report.activeTables), 'отворени маси сега'],
-    ['Просечна сметка', money(figures.average), monthly ? 'овој месец' : 'денес'],
-    ['Активни корисници', String(report.staff), 'сметки во системот'],
-  ];
-  let body = '';
-  if (label === 'Активности') {
-    body = `<section class="panel"><div class="panelhead"><div><h2>Последни затворени сметки</h2><p>Евиденција од базата на податоци</p></div><span class="badge">Зачувано</span></div><div class="tabledata-wrap"><table class="tabledata"><thead><tr><th>Вработен</th><th>Маса</th><th>Вкупно</th><th>Време</th></tr></thead><tbody>${recentRows(report.recent)}</tbody></table></div></section>`;
-  } else {
-    const workerRows = (monthly ? report.perWaiterMonth : report.perWaiter).map((item) => [item.name, money(item.total), item.total]).sort((a, b) => b[2] - a[2]);
-    const max = Math.max(1, ...workerRows.map((row) => row[2]));
-    body = `<div class="reportgrid"><section class="panel"><div class="panelhead"><div><h2>Продажба по келнер</h2><p>${monthly ? 'Сметки затворени овој месец' : 'Сметки затворени денес'}</p></div><span class="badge">Од база</span></div><div class="rows">${workerRows.length ? workerRows.map((row) => `<div class="barrow"><span>${esc(row[0])}</span><div class="bar"><i style="width:${Math.max(3, row[2] / max * 100)}%"></i></div><b>${esc(row[1])}</b></div>`).join('') : '<div class="empty">Сè уште нема затворени сметки.</div>'}</div></section><section class="panel"><div class="panelhead"><div><h2>Последни сметки</h2><p>Вистински записи од системот</p></div></div><div class="tabledata-wrap"><table class="tabledata"><thead><tr><th>Келнер</th><th>Маса</th><th>Износ</th></tr></thead><tbody>${recentRows(report.recent, true)}</tbody></table></div></section></div>`;
-  }
-  document.querySelector('#content').innerHTML = `${tableHeading(label === 'Преглед' ? 'Преглед на објектот' : label, isDirector ? 'Извештајот се пресметува од зачуваните сметки.' : 'Тековна состојба на ресторанот.')}${statsMarkup(stats)}${body}`;
-}
-
-function recentRows(rows, short = false) {
-  if (!rows.length) return `<tr><td colspan="${short ? 3 : 4}">Нема затворени сметки.</td></tr>`;
-  return rows.map((row) => `<tr><td>${esc(row.name)}</td><td>Маса ${String(row.table_id).padStart(2, '0')}</td><td>${money(row.total)}</td>${short ? '' : `<td>${new Date(`${row.closed_at.replace(' ', 'T')}Z`).toLocaleString('mk-MK')}</td>`}</tr>`).join('');
-}
-
-async function renderUsers() {
-  const result = await api('/api/users');
-  const rows = result.users.map((user) => `<tr><td>${esc(user.name)}</td><td>${esc(user.email)}</td><td><span class="badge">${esc(roleName(user.role))}</span></td><td>${user.active ? '<span class="badge">Активен</span>' : '<span class="badge" style="background:#f3eeee;color:#9b5550">Исклучен</span>'}</td><td>${user.id === currentUser.id ? '<span class="hint">Ти</span>' : `<button class="action-link" data-toggle-user="${user.id}" data-active="${user.active ? '0' : '1'}">${user.active ? 'Исклучи' : 'Активирај'}</button>`}</td></tr>`).join('');
-  document.querySelector('#content').innerHTML = `${tableHeading('Кориснички сметки', 'Креирај посебна најава за секој вработен и додели му улога.')}<section class="panel"><div class="panelhead"><div><h2>Додај вработен</h2><p>Email адресата е единствена; лозинката се чува hash-ирана.</p></div></div><form id="user-form" class="data-form"><div class="field"><label for="new-name">Име и презиме</label><input id="new-name" name="name" required minlength="2" maxlength="80"></div><div class="field"><label for="new-email">Gmail или email</label><input id="new-email" name="email" type="text" autocomplete="email" required></div><div class="field"><label for="new-role">Улога</label><select id="new-role" name="role"><option value="waiter">Келнер</option><option value="manager">Менаџер</option><option value="director">Директор</option></select></div><div class="field"><label for="new-password">Привремена лозинка</label><input id="new-password" name="password" type="password" required autocomplete="new-password"></div><button class="primary" type="submit">Креирај сметка</button></form><div class="hint" style="padding:0 18px 12px">Email-от не го проверуваме според формат. Лозинката нема минимум должина.</div><div class="auth-error" id="user-error" style="padding:0 18px"></div></section><section class="panel" style="margin-top:15px"><div class="panelhead"><div><h2>Тим</h2><p>Вклучени и исклучени сметки</p></div></div><div class="tabledata-wrap"><table class="tabledata"><thead><tr><th>Име</th><th>Email</th><th>Улога</th><th>Статус</th><th>Акција</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
-  document.querySelector('#user-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const error = document.querySelector('#user-error');
-    error.textContent = '';
-    try {
-      await api('/api/users', { method: 'POST', body: JSON.stringify({ name: form.get('name'), email: form.get('email'), role: form.get('role'), password: form.get('password') }) });
-      notify('Корисничката сметка е креирана.');
-      await renderUsers();
-    } catch (exception) { error.textContent = exception.message; }
-  });
-  document.querySelectorAll('[data-toggle-user]').forEach((button) => button.addEventListener('click', async () => {
-    try {
-      await api(`/api/users/${button.dataset.toggleUser}/active`, { method: 'PATCH', body: JSON.stringify({ active: button.dataset.active === '1' }) });
-      await renderUsers();
-    } catch (error) { notify(error.message); }
-  }));
-}
-
-function notify(message) {
-  const toast = document.querySelector('#toast');
-  toast.textContent = message;
-  toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 2600);
-}
-
-async function start() {
-  try {
-    const { setupRequired } = await api('/api/status');
-    if (setupRequired) return renderSetup();
-    try {
-      const result = await api('/api/me');
-      return await enterApp(result.user);
-    } catch { return renderLogin(); }
-  } catch { renderLogin(); }
-}
-
-start();
+const roles={waiter:'Келнер',manager:'Менаџер',director:'Директор'};
+let user=null,tables=[],products=[],searchResults=[],idempotencyKey='',selectedId=null,draft=[],query='',activeResult=0,qty=1,addonTarget=null,view='Маси и нарачки',events=null;
+const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money=n=>`${new Intl.NumberFormat('mk-MK',{minimumFractionDigits:n%100?2:0,maximumFractionDigits:2}).format(n/100)} ден`;
+async function api(path,opts={}){const r=await fetch(path,{credentials:'same-origin',...opts,headers:{...(opts.body?{'Content-Type':'application/json'}:{}),...(opts.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Барањето не успеа.');return d;}
+function authScreen(setup=false){$('#app').classList.add('hidden');const a=$('#auth');a.classList.remove('hidden');a.innerHTML=`<section class="auth-brand"><div class="brand-lockup"><span class="brand-icon">✳</span><span>Таверна</span></div><div class="auth-copy"><div class="eyebrow">Систем за угостителски објект</div><h1>Услугата започнува со добар ред.</h1><p>Маси, нарачки и преглед на работењето на едно место.</p></div><div class="auth-note">Локална апликација · Податоците се чуваат на овој компјутер</div></section><section class="auth-form-wrap"><div class="auth-card"><h2>${setup?'Постави сметка на директор':'Најави се'}</h2><p class="sub">${setup?'Првото поставување создава директорска сметка.':'Внеси ги податоците од твојата лична сметка.'}</p><form id="authform">${setup?'<div class="field"><label>Име и презиме</label><input name="name" required></div>':''}<div class="field"><label>Корисничко име</label><input name="username" autocomplete="username" required></div><div class="field"><label>Лозинка</label><input name="password" type="password" autocomplete="current-password" required></div><button class="primary auth-submit">${setup?'Создај сметка':'Најави се'}</button><div id="auth-error" class="auth-error"></div></form><div class="auth-security">Најавениот корисник автоматски се поврзува со неговите нарачки.</div></div></section>`;$('#authform').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget),body=Object.fromEntries(f);try{const d=await api(setup?'/api/setup':'/api/login',{method:'POST',body:JSON.stringify(body)});await enter(d.user);}catch(x){$('#auth-error').textContent=x.message;}};}
+async function enter(u){user=u;view=u.role==='waiter'?'Маси и нарачки':'Преглед';$('#auth').classList.add('hidden');$('#app').classList.remove('hidden');$('#staff').textContent=u.name;$('#staffrole').textContent=`${roles[u.role]} · Најавен`;$('#avatar').textContent=u.name.slice(0,2).toUpperCase();$('#mobile-role').textContent=roles[u.role];$('#account-menu-name').textContent=u.name;$('#account-menu-email').textContent=u.email;nav();await refresh();connect();render();}
+function nav(){const n=$('#nav'),items=[['♧','Маси и нарачки'],...(user.role!=='waiter'?[['▦','Преглед'],['☷','Ценовник']]:[]),...(user.role==='director'?[['♙','Корисници']]:[])];n.innerHTML=items.map(([i,t])=>`<button data-view="${t}"><b>${i}</b><span class="txt">${t}</span></button>`).join('');n.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{view=b.dataset.view;render();});}
+async function refresh(){tables=(await api('/api/tables')).tables;if(selectedId&&!tables.some(t=>t.id===selectedId))selectedId=null;}
+function connect(){events?.close();events=new EventSource('/api/events');events.addEventListener('refresh',async()=>{try{await refresh();render();}catch{}});}
+function heading(title,sub=''){return `<div class="heading"><div><h1>${esc(title)}</h1><p>${esc(sub)}</p></div><div class="date">${esc(user?.name||'')}</div></div>`;}
+function render(){if(!user)return;$('#crumb').textContent=view;$('#nav').querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===view));if(view==='Маси и нарачки')floor();else if(view==='Ценовник')catalog();else if(view==='Корисници')staff();else dashboard();}
+function floor(){const selected=tables.find(t=>t.id===selectedId);$('#content').innerHTML=`${heading('Маси и нарачки','Избери маса за да отвори или продолжи нарачка.')}${user.role==='manager'||user.role==='director'?`<section class="panel addtable"><b>Додај маса</b><select id="newtype"><option>O</option><option>K</option><option>P</option></select><input id="newnumber" type="number" min="1" max="99" placeholder="1–99"><button class="primary" id="addtable">Додај</button></section>`:''}<div class="panel floor-panel"><div class="panelhead"><div><h2>Распоред на маси</h2><p>${tables.filter(t=>t.status==='free').length} слободни · ${tables.filter(t=>t.status==='occupied').length} зафатени</p></div><span class="badge">Се освежува во живо</span></div><div class="floor-map">${tables.map((t,i)=>`<button class="floor-table ${t.status} ${selectedId===t.id?'chosen':''}" data-table="${t.id}" style="--x:${[16,43,70,30,62,84,12,48][i%8]}%;--y:${[24,22,25,68,67,67,48,47][i%8]}%"><b>${t.label}</b><span>${t.status==='free'?'Слободна':'Зафатена'}</span>${t.totalMinor?`<small>${money(t.totalMinor)}</small>`:''}</button>`).join('')}</div></div>${selected?`<section class="panel selected-panel"><div class="panelhead"><div><h2>Маса ${selected.label}</h2><p>${selected.status==='free'?'Слободна · подготвена за нова нарачка':'Активни нарачки на масата'}</p></div><div class="actions"><button class="primary" id="neworder">${selected.status==='free'?'Нова нарачка':'Додади нарачка'}</button>${selected.status==='occupied'?'<button class="pay" id="pay">Наплати и ослободи маса</button>':''}</div></div><div id="orders" class="orders"></div></section>`:''}`;
+$('#content').querySelectorAll('[data-table]').forEach(b=>b.onclick=()=>{selectedId=+b.dataset.table;draft=[];loadTableOrders().then(render);});$('#addtable')?.addEventListener('click',async()=>{try{await api('/api/tables',{method:'POST',body:JSON.stringify({type:$('#newtype').value,number:+$('#newnumber').value})});await refresh();render();}catch(e){toast(e.message);}});$('#neworder')?.addEventListener('click',()=>openEditor());$('#pay')?.addEventListener('click',async()=>{if(!confirm('Наплати ги сите активни нарачки и ослободи ја масата?'))return;try{const d=await api(`/api/tables/${selectedId}/pay`,{method:'POST',body:'{}'});toast(`Наплатено: ${money(d.paidMinor)}`);await refresh();render();}catch(e){toast(e.message);}});}
+async function loadTableOrders(){try{const d=await api(`/api/tables/${selectedId}`);const host=$('#orders');if(!host)return;const orders=d.table.orders;if(!orders.length){host.innerHTML='<p class="empty">Нема активни нарачки.</p>';return;}host.innerHTML=orders.map(o=>`<article class="saved-order"><header>Нарачка #${o.id} · ${esc(o.waiter)} · ${new Date(o.createdAt+'Z').toLocaleTimeString('mk-MK',{hour:'2-digit',minute:'2-digit'})}</header>${o.items.map(i=>`<div class="saved-line"><span>${i.quantity} × ${i.code} ${esc(i.name)}${i.note?` · ${esc(i.note)}`:''}${i.addons.map(a=>`<small>+ ${a.quantity} × ${esc(a.name)}</small>`).join('')}</span><b>${money((i.unitMinor+i.addons.reduce((s,a)=>s+a.unitMinor*a.quantity,0))*i.quantity)}</b></div>`).join('')}<footer>Вкупно <b>${money(o.totalMinor)}</b></footer></article>`).join('');}catch(e){toast(e.message);}}
+async function openEditor(){draft=[];query='';qty=1;idempotencyKey=crypto.randomUUID();await loadProducts();const t=tables.find(x=>x.id===selectedId);$('#modalroot').innerHTML=`<div class="modal-backdrop" id="backdrop"><section class="order-editor"><header><div><small>НОВА НАРАЧКА</small><h2>Маса ${t.label}</h2><p>Келнер: ${esc(user.name)}</p></div><button class="close" id="closeeditor">×</button></header><div class="search-area"><input id="search" placeholder="Пребарај по име или шифра…" autocomplete="off"><div class="qty-control"><button id="qtyminus">−</button><input id="addqty" type="number" min="1" value="1"><button id="qtyplus">+</button></div></div><div id="results" class="results"></div><div class="draft-lines" id="draftlines"></div><footer class="editor-footer"><b>Вкупно <span id="drafttotal">0 ден</span></b><div><button class="secondary" id="cancelorder">Откажи нарачка</button><button class="primary" id="saveorder">Заврши нарачка</button></div></footer></section></div>`;
+$('#closeeditor').onclick=closeEditor;$('#backdrop').onclick=e=>{if(e.target.id==='backdrop')closeEditor();};$('#cancelorder').onclick=closeEditor;$('#search').oninput=()=>{query=$('#search').value;activeResult=0;renderResults();};$('#search').onkeydown=e=>{const list=$$('.result');if(e.key==='ArrowDown'){e.preventDefault();activeResult=Math.min(activeResult+1,list.length-1);renderResults();}else if(e.key==='ArrowUp'){e.preventDefault();activeResult=Math.max(0,activeResult-1);renderResults();}else if(e.key==='Enter'){e.preventDefault();if(searchResults.length)addProduct(searchResults[activeResult]);}};$('#qtyminus').onclick=()=>setQty(qty-1);$('#qtyplus').onclick=()=>setQty(qty+1);$('#addqty').onchange=()=>setQty(+$('#addqty').value);$('#saveorder').onclick=saveOrder;renderResults();renderDraft();$('#search').focus();}
+async function loadProducts(kind){products=(await api('/api/products'+(kind?'?kind='+kind:''))).products;}
+function setQty(n){qty=Math.max(1,Number.isInteger(n)?n:1);$('#addqty').value=qty;}
+function renderResults(){const host=$('#results');if(!host)return;const q=query.trim().toLocaleLowerCase('mk');const found=products.filter(p=>!q||`${p.code} ${p.name}`.toLocaleLowerCase('mk').includes(q));searchResults=found;host.innerHTML=found.length?found.map((p,i)=>`<div class="result ${i===activeResult?'active':''}" data-result="${i}" role="option" tabindex="0"><span><b>${p.code}</b> ${esc(p.name)}</span><strong>${money(p.priceMinor)}</strong><button class="tiny-add" data-add="${i}">Додади</button></div>`).join(''):'<div class="empty">Нема резултати. Провери ја шифрата или името.</div>';host.querySelectorAll('[data-result]').forEach(b=>b.onclick=e=>{if(e.target.closest('[data-add]'))return;activeResult=+b.dataset.result;renderResults();$('#search').focus();});host.querySelectorAll('[data-add]').forEach(b=>b.onclick=e=>{e.stopPropagation();addProduct(found[+b.dataset.add]);});}
+function addProduct(p){if(!p)return;const line={productId:p.id,code:p.code,name:p.name,unitMinor:p.priceMinor,quantity:qty,note:'',addons:[]};const wasAddon=addonTarget!==null;if(wasAddon){draft[addonTarget].addons.push({...line,quantity:qty});addonTarget=null;}else draft.push(line);query='';$('#search').value='';setQty(1);renderDraft();if(wasAddon)loadProducts().then(()=>{renderResults();$('#search').focus();});else{renderResults();$('#search').focus();}}
+function draftTotal(){return draft.reduce((s,l)=>s+(l.unitMinor+l.addons.reduce((a,x)=>a+x.unitMinor*x.quantity,0))*l.quantity,0);}
+function renderDraft(){const host=$('#draftlines');if(!host)return;host.innerHTML=draft.length?draft.map((l,i)=>`<article class="draft-line"><div><small>${i+1} · ${l.code}</small><b>${esc(l.name)}</b><div class="line-tools"><button data-lminus="${i}">−</button><input data-lqty="${i}" value="${l.quantity}" type="number" min="1"><button data-lplus="${i}">+</button><button class="text-action" data-addon="${i}">＋ Додади додаток</button><button class="delete-line" data-delete="${i}">Избриши</button></div><input class="note-input" data-note="${i}" placeholder="Кратка забелешка, на пр. без кромид" value="${esc(l.note)}">${l.addons.map((a,j)=>`<div class="addon-line">+ ${a.code} ${esc(a.name)} <span>${a.quantity}× по главен артикл</span><button data-addon-del="${i},${j}">×</button></div>`).join('')}</div><strong>${money((l.unitMinor+l.addons.reduce((a,x)=>a+x.unitMinor*x.quantity,0))*l.quantity)}</strong></article>`).join(''):'<div class="empty">Нарачката е празна. Пребарај артикл погоре.</div>';
+host.querySelectorAll('[data-lminus]').forEach(b=>b.onclick=()=>changeLine(+b.dataset.lminus,-1));host.querySelectorAll('[data-lplus]').forEach(b=>b.onclick=()=>changeLine(+b.dataset.lplus,1));host.querySelectorAll('[data-lqty]').forEach(i=>i.onchange=()=>{draft[+i.dataset.lqty].quantity=Math.max(1,parseInt(i.value)||1);renderDraft();});host.querySelectorAll('[data-note]').forEach(i=>i.onchange=()=>draft[+i.dataset.note].note=i.value);host.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>{draft.splice(+b.dataset.delete,1);renderDraft();});host.querySelectorAll('[data-addon]').forEach(b=>b.onclick=()=>addonSearch(+b.dataset.addon));host.querySelectorAll('[data-addon-del]').forEach(b=>b.onclick=()=>{const [i,j]=b.dataset.addonDel.split(',').map(Number);draft[i].addons.splice(j,1);renderDraft();});$('#drafttotal').textContent=money(draftTotal());$('#saveorder').disabled=!draft.length;}
+function changeLine(i,delta){draft[i].quantity=Math.max(1,draft[i].quantity+delta);renderDraft();}
+async function addonSearch(index){addonTarget=index;query='';qty=1;await loadProducts('addon');$('#search').value='';$('#search').placeholder='Пребарај додатоци по име или шифра…';$('#search').oninput=()=>{query=$('#search').value;activeResult=0;renderResults();};renderResults();$('#search').focus();}
+function closeEditor(){if(draft.length&&!confirm('Отфрли ги незачуваните ставки?'))return;$('#modalroot').innerHTML='';loadProducts().catch(()=>{});refresh().then(render);}
+async function saveOrder(){if(!draft.length)return;const b=$('#saveorder');b.disabled=true;try{await api('/api/orders',{method:'POST',body:JSON.stringify({tableId:selectedId,idempotencyKey,items:draft.map(l=>({productId:l.productId,quantity:l.quantity,note:l.note,addons:l.addons.map(a=>({productId:a.productId,quantity:a.quantity}))}))})});draft=[];$('#modalroot').innerHTML='';await refresh();render();await loadTableOrders();toast('Нарачката е зачувана.');}catch(e){b.disabled=false;toast(e.message);}}
+function toast(s){const t=$('#toast');t.textContent=s;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2800);}
+async function dashboard(){try{const d=await api('/api/overview'),r=await api('/api/overview/recent');$('#content').innerHTML=`${heading('Преглед','Тековни суми и наплати од базата.') }<div class="stats"><div class="stat"><small>Наплатено денес</small><strong>${money(d.salesToday.total)}</strong><em>${d.salesToday.count} наплати</em></div><div class="stat"><small>Активни нарачки</small><strong>${money(d.open.total)}</strong><em>${d.open.count} нарачки</em></div><div class="stat"><small>Активни маси</small><strong>${tables.filter(t=>t.status==='occupied').length}</strong><em>сега</em></div><div class="stat"><small>Вработени</small><strong>${d.totalStaff}</strong><em>активни сметки</em></div></div><section class="panel"><div class="panelhead"><div><h2>Последни наплати</h2><p>Келнерот што ја евидентирал наплатата</p></div></div><div class="tabledata-wrap"><table class="tabledata"><thead><tr><th>Маса</th><th>Вработен</th><th>Износ</th><th>Време</th></tr></thead><tbody>${r.recent.map(x=>`<tr><td>${x.tableLabel}</td><td>${esc(x.name)}</td><td>${money(x.amountMinor)}</td><td>${new Date(x.paidAt+'Z').toLocaleString('mk-MK')}</td></tr>`).join('')||'<tr><td colspan="4">Нема наплати.</td></tr>'}</tbody></table></div></section>`;}catch(e){toast(e.message);}}
+async function catalog(){await loadProducts('all');$('#content').innerHTML=`${heading('Ценовник','Цените се чуваат во најмала парична единица; старите нарачки ја задржуваат снимката на цената.')}<section class="panel"><div class="panelhead"><div><h2>Додај артикл</h2><p>Кујна 800–899 · Шанк 501–599 · Додатоци 200–299</p></div></div><form class="data-form" id="prodform"><div class="field"><label>Шифра</label><input name="code" type="number" required></div><div class="field"><label>Име</label><input name="name" required></div><div class="field"><label>Категорија</label><select name="category"><option value="kitchen">Кујна</option><option value="bar">Шанк</option><option value="addon">Додаток</option></select></div><div class="field"><label>Цена (денари)</label><input name="price" type="number" min="0" step="0.01" required></div><button class="primary">Додај</button></form><div class="tabledata-wrap"><table class="tabledata"><thead><tr><th>Шифра</th><th>Име</th><th>Тип</th><th>Цена</th><th></th></tr></thead><tbody>${products.map(p=>`<tr><td>${p.code}</td><td>${esc(p.name)}</td><td>${p.category==='kitchen'?'Кујна':p.category==='bar'?'Шанк':'Додаток'}</td><td>${money(p.priceMinor)}</td><td><button class="action-link" data-edit="${p.id}">Промени</button><button class="action-link" data-deactivate="${p.id}">Деактивирај</button></td></tr>`).join('')}</tbody></table></div></section>`;$('#prodform').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{await api('/api/products',{method:'POST',body:JSON.stringify({code:+f.get('code'),name:f.get('name'),category:f.get('category'),priceMinor:Math.round(+f.get('price')*100)})});catalog();}catch(x){toast(x.message);}};$$('[data-edit]').forEach(b=>b.onclick=async()=>{const p=products.find(x=>x.id===+b.dataset.edit),name=prompt('Име на артиклот',p.name);if(name===null)return;const price=prompt('Цена во денари',p.priceMinor/100);if(price===null)return;try{await api(`/api/products/${p.id}`,{method:'PATCH',body:JSON.stringify({name,priceMinor:Math.round(+price*100)})});catalog();}catch(e){toast(e.message);}});$$('[data-deactivate]').forEach(b=>b.onclick=async()=>{try{await api(`/api/products/${b.dataset.deactivate}`,{method:'PATCH',body:JSON.stringify({active:false})});catalog();}catch(e){toast(e.message);}});}
+async function staff(){const d=await api('/api/users');$('#content').innerHTML=`${heading('Корисници','Келнерските шифри се прикажуваат со три цифри.')}<section class="panel"><div class="panelhead"><div><h2>Додај вработен</h2></div></div><form class="data-form" id="userform"><div class="field"><label>Име</label><input name="name" required></div><div class="field"><label>Корисничко име</label><input name="username" required></div><div class="field"><label>Улога</label><select name="role"><option value="waiter">Келнер</option><option value="manager">Менаџер</option><option value="director">Директор</option></select></div><div class="field"><label>Шифра келнер (001–099)</label><input name="staffCode" pattern="[0-9]{3}"></div><div class="field"><label>Лозинка</label><input name="password" type="password" required></div><button class="primary">Креирај</button></form><div class="tabledata-wrap"><table class="tabledata"><thead><tr><th>Шифра</th><th>Име</th><th>Корисничко име</th><th>Улога</th></tr></thead><tbody>${d.users.map(x=>`<tr><td>${x.staffCode||'—'}</td><td>${esc(x.name)}</td><td>${esc(x.email)}</td><td>${roles[x.role]}</td></tr>`).join('')}</tbody></table></div></section>`;$('#userform').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget),payload=Object.fromEntries(f);try{await api('/api/users',{method:'POST',body:JSON.stringify(payload)});staff();}catch(x){toast(x.message);}};}
+function setup(){api('/api/status').then(x=>x.setupRequired?authScreen(true):api('/api/me').then(x=>enter(x.user)).catch(()=>authScreen(false))).catch(()=>authScreen(false));}
+$('#account-menu-button').onclick=e=>{e.stopPropagation();const m=$('#account-menu');m.hidden=!m.hidden;e.currentTarget.setAttribute('aria-expanded',String(!m.hidden));};$('#menu-logout').onclick=async()=>{try{await api('/api/logout',{method:'POST',body:'{}'});}catch{}events?.close();user=null;authScreen(false);};document.addEventListener('click',e=>{if(!e.target.closest('.account-menu-wrap'))$('#account-menu').hidden=true;});
+setup();

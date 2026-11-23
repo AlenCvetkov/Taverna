@@ -7,7 +7,7 @@
     "node": ">=24.15"
   },
   "scripts": {
-    "start": "node server.mjs",
-    "dev": "node server.mjs"
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "node --env-file-if-exists=.env server.mjs"
   }
 }
