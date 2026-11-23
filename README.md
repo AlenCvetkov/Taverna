@@ -25,6 +25,8 @@ Vo postoechkata lokalna baza se podgotveni smetkite:
 
 Smetkite se vo lokalnata SQLite baza; lozinkite se hash-irani i ne se vklucheni vo Git.
 
+Pri prvo startuvanje na nova instalacija se kreira direktor so samo korisnichko ime i lozinka; imeto za prikaz se postavuva isto kako korisnichkoto ime. Smetkite ne se prenesuvaat so GitHub bidejki SQLite bazata e lokalna i ignorirana od Git. Za povekje kompjuteri da gi koristat istite smetki, aplikacijata treba da se povrze so zaednichka server baza.
+
 ## Funkcii
 
 - Kelnerot po najava vednash go gleda rasporedot na masite. Slobodnite se zeleni, zafatenite crveni.
