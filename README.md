@@ -14,18 +14,18 @@ Potreben e Node.js 24.15 ili ponov.
 
 ## Najava
 
-Vo postoechkata lokalna baza se podgotveni smetkite:
+Primer-smetkite se kreiraat ako za niv se postaveni ne-prazni `SEED_*_PASSWORD` environment promenlivi vo `.env`:
 
-| Uloga | Korisnichko ime | Lozinka |
-|---|---|---|
-| Kelner | `kelner1` | Lozinkata e dadena zasebno vo razgovorot |
-| Kelner | `kelner2` | Lozinkata e dadena zasebno vo razgovorot |
-| Menadzer | `menadzer` | Lozinkata e dadena zasebno vo razgovorot |
-| Direktor | `direktor` | Lozinkata e dadena zasebno vo razgovorot |
+| Uloga | Korisnichko ime |
+|---|---|
+| Kelner | `kelner1` |
+| Kelner | `kelner2` |
+| Menadzer | `menadzer` |
+| Direktor | `direktor` |
 
-Smetkite se vo lokalnata SQLite baza; lozinkite se hash-irani i ne se vklucheni vo Git.
+Lozinkite se hash-iraat so scrypt i ne se chitaat od Git. Primer za promenlivite ima vo `.env.example`; vistinskite vrednosti vnesi gi samo vo lokalniot `.env`. Postoechka smetka ne se resetira avtomatski.
 
-Pri prvo startuvanje na nova instalacija se kreira direktor so samo korisnichko ime i lozinka; imeto za prikaz se postavuva isto kako korisnichkoto ime. Smetkite ne se prenesuvaat so GitHub bidejki SQLite bazata e lokalna i ignorirana od Git. Za povekje kompjuteri da gi koristat istite smetki, aplikacijata treba da se povrze so zaednichka server baza.
+Na nova instalacija, primer-smetkite se dodavaat samo koga nivnite lozinki se postaveni vo lokalniot `.env`. Smetkite ne se prenesuvaat kako SQLite fajl preku GitHub. Za povekje kompjuteri da gi koristat istite narachki i smetki, aplikacijata treba da se povrze so zaednichka server baza.
 
 ## Funkcii
 
