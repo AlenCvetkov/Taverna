@@ -1,4 +1,11 @@
 import assert from 'node:assert/strict';
+import { searchKey, matchesProduct } from './product-utils.mjs';
+for(const text of ['espreso','espresso','ЕСПРЕСО','еspreso'])assert(matchesProduct({code:501,name:'Еспресо'},text));
+assert(matchesProduct({code:800,name:'Шопска салата'},'shopska'));
+assert(matchesProduct({code:200,name:'Кашкавал'},'kaskaval'));
+assert(matchesProduct({code:801,name:'Таверна бургер'},'801'));
+assert(!matchesProduct({code:501,name:'Еспресо'},'voda'));
+assert.equal(searchKey('Ѓ ќ љ њ џ'),'gj kj lj nj dz');
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
@@ -35,6 +42,12 @@ try {
   assert.equal(tables.length,5);
   assert(tables.every(t=>t.isMine===false));
   const products = (await api('/api/products?kind=all')).products;
+  for(const query of ['espreso','espresso','еспресо','ЕСПРЕСО','espr','501']){
+   const found=(await api('/api/products?q='+encodeURIComponent(query))).products;
+   assert(found.some(p=>p.code===501),'Missing espresso result: '+query);
+  }
+  for(const p of products){const r=await fetch('http://127.0.0.1:4199'+p.imageUrl);assert.equal(r.status,200);assert(r.headers.get('content-type').includes('image/svg+xml'));}
+  const forbidden=await fetch('http://127.0.0.1:4199/api/products/1/image',{method:'PATCH',headers:{'Content-Type':'application/json',cookie},body:JSON.stringify({imageData:null})});assert.equal(forbidden.status,403);
   const burger = products.find(x=>x.code===801), cheese = products.find(x=>x.code===200);
   const order = {tableId:tables[0].id,idempotencyKey:randomUUID(),items:[{productId:burger.id,quantity:2,note:'bez kromid',addons:[{productId:cheese.id,quantity:1}]}]};
   await api('/api/orders','POST',order);
@@ -58,6 +71,11 @@ try {
   assert.equal((await api('/api/tables')).tables[0].isMine,false);
   assert.equal((await api('/api/tables')).tables[0].status,'free');
   await api('/api/login','POST',{username:'direktor',password:pass});
+  const photo='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+  await api('/api/products/'+burger.id+'/image','PATCH',{imageData:photo});
+  const pictured=(await api('/api/products')).products.find(p=>p.id===burger.id);assert(pictured.hasCustomImage);assert(pictured.imageUrl.startsWith('/api/products/'));
+  const photoResponse=await fetch('http://127.0.0.1:4199'+pictured.imageUrl,{headers:{cookie}});assert.equal(photoResponse.status,200);assert.equal(photoResponse.headers.get('content-type'),'image/png');assert.equal(Buffer.from(await photoResponse.arrayBuffer()).toString('base64'),photo.split(',')[1]);
+  const invalid=await fetch('http://127.0.0.1:4199/api/products/'+burger.id+'/image',{method:'PATCH',headers:{'Content-Type':'application/json',cookie},body:JSON.stringify({imageData:'data:image/svg+xml;base64,PHN2Zz4='})});assert.equal(invalid.status,400);
   await api('/api/products','POST',{code:899,name:'Check',category:'kitchen',priceMinor:12300});
   await api('/api/users','POST',{name:'Check',username:'check',role:'waiter',staffCode:'099',password:pass});
   const db = new DatabaseSync(path);
@@ -74,7 +92,11 @@ try {
   child = await start();
   await api('/api/login','POST',{username:'kelner1',password:pass});
   assert.equal((await api('/api/tables')).tables[0].status,'free');
-  console.log('PASS: fresh migrations, login, subtype sync, code limits, order with addon, total, duplicate prevention, payment, restart, personal table ownership, shared tables and payment clearing ownership.');
+  assert((await api('/api/products')).products.find(p=>p.id===burger.id).hasCustomImage);
+  await api('/api/login','POST',{username:'direktor',password:pass});
+  await api('/api/products/'+burger.id+'/image','PATCH',{imageData:null});
+  const restored=(await api('/api/products')).products.find(p=>p.id===burger.id);assert.equal(restored.hasCustomImage,false);assert(restored.imageUrl.startsWith('/assets/'));
+  console.log('PASS: fresh migrations, login, subtype sync, code limits, order with addon, total, duplicate prevention, payment, restart, personal table ownership, shared tables and payment clearing ownership, Latin/Cyrillic search, all default illustrations, photo permissions, upload, invalid format, restart persistence and photo removal.');
 } finally {
   await stop();
   for (const suffix of ['', '-wal', '-shm']) rmSync(path+suffix,{force:true});

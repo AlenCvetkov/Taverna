@@ -22,3 +22,13 @@ export function migrateNamedSchema(db, root) {
     throw error;
   }
 }
+
+export function migrateProductImages(db,root) {
+ if(db.prepare('SELECT version FROM schema_migrations WHERE version=5').get())return;
+ db.exec('BEGIN IMMEDIATE');
+ try{
+  db.exec(readFileSync(join(root,'migrations','005_product_images.sql'),'utf8'));
+  db.prepare('INSERT INTO schema_migrations(version) VALUES(5)').run();
+  db.exec('COMMIT');
+ }catch(error){db.exec('ROLLBACK');throw error;}
+}

@@ -7,7 +7,9 @@ import { networkInterfaces } from 'node:os';
 import { randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { migrateNamedSchema } from './database-schema.mjs';
+import { migrateNamedSchema, migrateProductImages } from './database-schema.mjs';
+import { matchesProduct, defaultImage } from './product-utils.mjs';
+import { parseProductImage } from './product-images.mjs';
 
 const scrypt = promisify(scryptCb);
 const root = dirname(fileURLToPath(import.meta.url));
@@ -60,6 +62,7 @@ if (db.prepare('SELECT COUNT(*) AS n FROM products').get().n === 0) {
 }
 }
 migrateNamedSchema(db, root);
+migrateProductImages(db, root);
 
 // Demo-account passwords come only from the untracked .env file, never from source control.
 const demoAccounts = [
@@ -91,7 +94,7 @@ const streams = new Set();
 const roleNames = { waiter:'Келнер', manager:'Менаџер', director:'Директор' };
 const send = (res,status,data,headers={}) => { res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}); res.end(JSON.stringify(data)); };
 const fail = (res,status,error) => send(res,status,{error});
-async function body(req) { let raw=''; for await (const part of req) { raw+=part; if(raw.length>100000) throw Object.assign(new Error('Барањето е преголемо.'),{status:413}); } try{return raw?JSON.parse(raw):{};}catch{throw Object.assign(new Error('Невалидни податоци.'),{status:400});} }
+async function body(req,maxLength=100000) { let raw=''; for await (const part of req) { raw+=part; if(raw.length>maxLength) throw Object.assign(new Error('Барањето е преголемо.'),{status:413}); } try{return raw?JSON.parse(raw):{};}catch{throw Object.assign(new Error('Невалидни податоци.'),{status:400});} }
 function cookie(req) { const x=req.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith('taverna_session=')); return x?decodeURIComponent(x.slice(16)):''; }
 function me(req) { const s=sessions.get(cookie(req)); if(!s||s.exp<Date.now()){sessions.delete(cookie(req));return null;} const u=db.prepare('SELECT id,name,username,role,staff_code,active FROM Lice WHERE id=?').get(s.uid); return u?.active?u:null; }
 const pub = u => ({id:u.id,name:u.name,email:u.username,role:u.role,staffCode:u.staff_code});
@@ -103,7 +106,7 @@ function tableData(waiterId){return db.prepare(`SELECT t.id,t.table_type AS type
  COALESCE((SELECT SUM(total_minor) FROM Narachka o WHERE o.table_id=t.id AND o.status='active'),0) AS totalMinor
  FROM Masa t WHERE t.active=1 ORDER BY t.table_type,t.table_number`).all(waiterId).map(t=>({...t,isMine:Boolean(t.isMine),label:`${t.type}${t.number}`}));}
 function tableOrders(id){ return db.prepare(`SELECT o.id,o.waiter_id AS waiterId,u.name AS waiter,o.created_at AS createdAt,o.total_minor AS totalMinor,
- json_group_array(json_object('id',i.id,'lineNo',i.line_no,'code',i.product_code,'name',i.name_snapshot,'unitMinor',i.unit_price_minor,'quantity',i.quantity,'note',i.note,'addons',json(COALESCE((SELECT json_group_array(json_object('id',a.id,'code',a.product_code,'name',a.name_snapshot,'unitMinor',a.unit_price_minor,'quantity',a.quantity_per_unit)) FROM DodatokNaStavka a WHERE a.order_item_id=i.id),'[]')))) AS items
+ json_group_array(json_object('id',i.id,'imageUrl',(SELECT CASE WHEN image_data IS NOT NULL THEN '/api/products/'||id||'/image?v='||image_version ELSE '' END FROM Artikl WHERE id=i.product_id),'lineNo',i.line_no,'code',i.product_code,'name',i.name_snapshot,'unitMinor',i.unit_price_minor,'quantity',i.quantity,'note',i.note,'addons',json(COALESCE((SELECT json_group_array(json_object('id',a.id,'code',a.product_code,'name',a.name_snapshot,'unitMinor',a.unit_price_minor,'quantity',a.quantity_per_unit)) FROM DodatokNaStavka a WHERE a.order_item_id=i.id),'[]')))) AS items
  FROM Narachka o JOIN Lice u ON u.id=o.waiter_id LEFT JOIN StavkaNaNarachka i ON i.order_id=o.id WHERE o.table_id=? AND o.status='active' GROUP BY o.id ORDER BY o.id`).all(id).map(o=>({...o,items:JSON.parse(o.items).filter(i=>i.id!==null)})); }
 function tx(fn){db.exec('BEGIN IMMEDIATE');try{const x=fn();db.exec('COMMIT');return x;}catch(e){db.exec('ROLLBACK');throw e;}}
 async function api(req,res,url){const p=url.pathname,m=req.method,u=me(req);
@@ -116,7 +119,26 @@ async function api(req,res,url){const p=url.pathname,m=req.method,u=me(req);
  if(p==='/api/events'&&m==='GET'){if(!auth(res,u))return;res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'});res.write('event: refresh\ndata: connected\n\n');streams.add(res);req.on('close',()=>streams.delete(res));return;}
  if(p==='/api/tables'&&m==='GET'){if(!auth(res,u))return;return send(res,200,{tables:tableData(u.id)});}
  const one=p.match(/^\/api\/tables\/(\d+)$/);if(one&&m==='GET'){if(!auth(res,u))return;const id=+one[1],t=db.prepare('SELECT id,table_type AS type,table_number AS number FROM Masa WHERE id=? AND active=1').get(id);if(!t)return fail(res,404,'Масата не е пронајдена.');return send(res,200,{table:{...t,label:`${t.type}${t.number}`,orders:tableOrders(id)}});}
- if(p==='/api/products'&&m==='GET'){if(!auth(res,u))return;const q=String(url.searchParams.get('q')||'').trim().toLocaleLowerCase('mk');const kind=url.searchParams.get('kind');const products=db.prepare('SELECT id,code,name,category,price_minor AS priceMinor FROM Artikl WHERE active=1 ORDER BY code').all().filter(x=>(kind==='all'||(kind?x.category===kind:x.category!=='addon'))&&(!q||`${x.code} ${x.name}`.toLocaleLowerCase('mk').includes(q)));return send(res,200,{products});}
+ const imageRoute=p.match(/^\/api\/products\/(\d+)\/image$/);
+ if(imageRoute&&m==='GET'){
+  if(!auth(res,u))return;
+  const product=db.prepare('SELECT image_data FROM Artikl WHERE id=?').get(+imageRoute[1]);
+  if(!product?.image_data)return fail(res,404,'Нема фотографија за артиклот.');
+  const image=parseProductImage(product.image_data);
+  res.writeHead(200,{'Content-Type':image.mime,'Content-Length':image.bytes.length,'Cache-Control':'no-store'});
+  return res.end(image.bytes);
+ }
+ if(imageRoute&&m==='PATCH'){
+  if(!auth(res,u,['manager','director']))return;
+  const id=+imageRoute[1];
+  if(!db.prepare('SELECT id FROM Artikl WHERE id=?').get(id))return fail(res,404,'Артиклот не е пронајден.');
+  const b=await body(req,1500000);
+  if(b.imageData!==null){try{parseProductImage(b.imageData);}catch(e){return fail(res,400,e.message);}}
+  db.prepare('UPDATE Artikl SET image_data=?,image_version=image_version+1 WHERE id=?').run(b.imageData,id);
+  return send(res,200,{ok:true});
+ }
+
+ if(p==='/api/products'&&m==='GET'){if(!auth(res,u))return;const q=String(url.searchParams.get('q')||'').trim();const kind=url.searchParams.get('kind');const products=db.prepare('SELECT id,code,name,category,price_minor AS priceMinor,image_data IS NOT NULL AS hasCustomImage,image_version FROM Artikl WHERE active=1 ORDER BY code').all().filter(x=>(kind==='all'||(kind?x.category===kind:x.category!=='addon'))&&(!q||matchesProduct(x,q))).map(x=>{const {image_version,...p}=x;return {...p,hasCustomImage:Boolean(p.hasCustomImage),imageUrl:p.hasCustomImage?`/api/products/${p.id}/image?v=${image_version}`:defaultImage(p)};});return send(res,200,{products});}
  if(p==='/api/orders'&&m==='POST'){if(!auth(res,u,['waiter','manager']))return;const b=await body(req),tableId=Number(b.tableId),lines=Array.isArray(b.items)?b.items:[],key=String(b.idempotencyKey||'');if(!key||lines.length<1||lines.length>100)return fail(res,400,'Додајте барем еден артикл.');const prior=db.prepare('SELECT id FROM Narachka WHERE idempotency_key=?').get(key);if(prior)return send(res,200,{orderId:prior.id,tables:tableData(u.id),duplicate:true});try{const orderId=tx(()=>{if(!db.prepare('SELECT id FROM Masa WHERE id=? AND active=1').get(tableId))throw Object.assign(new Error('Масата не е пронајдена.'),{status:404});const order=Number(db.prepare("INSERT INTO Narachka(table_id,waiter_id,status,total_minor,idempotency_key) VALUES(?,?,'active',0,?)").run(tableId,u.id,key).lastInsertRowid);let total=0,lineNo=0;for(const line of lines){const product=db.prepare('SELECT * FROM Artikl WHERE id=? AND active=1 AND category IN (\'kitchen\',\'bar\')').get(Number(line.productId));const qty=Number(line.quantity);if(!product||!Number.isInteger(qty)||qty<1||qty>999)throw Object.assign(new Error('Артикл или количина не се валидни.'),{status:400});const addons=Array.isArray(line.addons)?line.addons:[];let unit=product.price_minor;const itemId=Number(db.prepare('INSERT INTO StavkaNaNarachka(order_id,line_no,product_id,product_code,name_snapshot,unit_price_minor,quantity,note) VALUES(?,?,?,?,?,?,?,?)').run(order,++lineNo,product.id,product.code,product.name,product.price_minor,qty,String(line.note||'').slice(0,160)).lastInsertRowid);for(const add of addons){const a=db.prepare("SELECT * FROM Artikl WHERE id=? AND category='addon' AND active=1").get(Number(add.productId)),aq=Number(add.quantity);if(!a||!Number.isInteger(aq)||aq<1||aq>999)throw Object.assign(new Error('Додаток или количина не се валидни.'),{status:400});db.prepare('INSERT INTO DodatokNaStavka(order_item_id,product_id,product_code,name_snapshot,unit_price_minor,quantity_per_unit) VALUES(?,?,?,?,?,?)').run(itemId,a.id,a.code,a.name,a.price_minor,aq);unit+=a.price_minor*aq;}total+=unit*qty;}db.prepare('UPDATE Narachka SET total_minor=? WHERE id=?').run(total,order);return order;});changed();return send(res,201,{orderId,tables:tableData(u.id)});}catch(e){if(e.status)return fail(res,e.status,e.message);throw e;}}
  const settle=p.match(/^\/api\/tables\/(\d+)\/pay$/);if(settle&&m==='POST'){if(!auth(res,u,['waiter','manager']))return;const id=+settle[1];try{const amount=tx(()=>{const orders=db.prepare("SELECT id,total_minor FROM Narachka WHERE table_id=? AND status='active'").all(id);const total=orders.reduce((s,o)=>s+o.total_minor,0);if(!orders.length||!total)throw Object.assign(new Error('Нема активна сметка за наплата.'),{status:400});db.prepare("UPDATE Narachka SET status='paid',paid_at=CURRENT_TIMESTAMP WHERE table_id=? AND status='active'").run(id);db.prepare('INSERT INTO Naplata(table_id,received_by,amount_minor) VALUES(?,?,?)').run(id,u.id,total);return total;});changed();return send(res,200,{paidMinor:amount,tables:tableData(u.id)});}catch(e){if(e.status)return fail(res,e.status,e.message);throw e;}}
  if(p==='/api/tables'&&m==='POST'){if(!auth(res,u,['manager','director']))return;const b=await body(req),type=String(b.type||''),number=Number(b.number);if(!['O','K','P'].includes(type)||!Number.isInteger(number)||number<1||number>99)return fail(res,400,'Типот мора да биде O, K или P, а бројот од 1 до 99.');try{db.prepare('INSERT INTO Masa(table_type,table_number) VALUES(?,?)').run(type,number);}catch{return fail(res,409,'Оваа маса веќе постои.');}changed();return send(res,201,{tables:tableData(u.id)});}
@@ -128,6 +150,6 @@ async function api(req,res,url){const p=url.pathname,m=req.method,u=me(req);
  if(p==='/api/overview/recent'&&m==='GET'){if(!auth(res,u,['manager','director']))return;return send(res,200,{recent:db.prepare("SELECT p.amount_minor AS amountMinor,p.paid_at AS paidAt,u.name,t.table_type||t.table_number AS tableLabel FROM Naplata p JOIN Lice u ON u.id=p.received_by JOIN Masa t ON t.id=p.table_id ORDER BY p.id DESC LIMIT 30").all()});}
  return fail(res,404,'API маршрутата не е пронајдена.');}
 
-const server=createServer(async(req,res)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; form-action 'self'; frame-ancestors 'none'");const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);try{if(url.pathname.startsWith('/api/'))return await api(req,res,url);if(req.method!=='GET')return fail(res,405,'Методот не е дозволен.');const files={'/':'index.html','/index.html':'index.html','/app.js':'app.js'};if(!files[url.pathname])return fail(res,404,'Страницата не е пронајдена.');res.writeHead(200,{'Content-Type':url.pathname.endsWith('.js')?'text/javascript; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(await readFile(join(root,files[url.pathname])));}catch(e){if(!res.headersSent)fail(res,e.status||500,e.status?e.message:'Настана внатрешна грешка.');else res.destroy();if(!e.status)console.error(e);}});
+const server=createServer(async(req,res)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; form-action 'self'; frame-ancestors 'none'");const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);try{if(url.pathname.startsWith('/api/'))return await api(req,res,url);if(req.method!=='GET')return fail(res,405,'Методот не е дозволен.');const asset=/^\/assets\/products\/(espresso|burger|salad|chicken|fries|lemonade|water|juice|cheese|bacon|sauce|meal|drink|addon)\.svg$/.test(url.pathname);const files={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/product-utils.mjs':'product-utils.mjs'};if(asset)files[url.pathname]=url.pathname.slice(1);if(!files[url.pathname])return fail(res,404,'Страницата не е пронајдена.');res.writeHead(200,{'Content-Type':/\.m?js$/.test(url.pathname)?'text/javascript; charset=utf-8':asset?'image/svg+xml; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(await readFile(join(root,files[url.pathname])));}catch(e){if(!res.headersSent)fail(res,e.status||500,e.status?e.message:'Настана внатрешна грешка.');else res.destroy();if(!e.status)console.error(e);}});
 const port=Number(process.env.PORT||4175);server.listen(port,'0.0.0.0',()=>{console.log(`Taverna POS: http://localhost:${port}`);console.log(`SQLite: ${dbPath}`);for(const group of Object.values(networkInterfaces()))for(const a of group||[])if(a.family==='IPv4'&&!a.internal)console.log(`Telefon: http://${a.address}:${port}`);});
 process.on('SIGINT',()=>{db.close();process.exit(0);});process.on('SIGTERM',()=>{db.close();process.exit(0);});
