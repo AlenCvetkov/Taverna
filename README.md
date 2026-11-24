@@ -154,3 +154,9 @@ Slednive tocki ja belezhat rabotata vo redosledot vo koj e commit-irana:
 - Narachkite i pregledot se za lokalna rabota/LAN. Za produkcija so oddaleni lokacii treba centralna databaza, HTTPS, bekap i dopolnitelna bezbednosna proverka.
 
 Proverka na imenovanata shema: `node verify-schema.mjs`. Koristi posebna privremena baza i port 4199; proveruva svezi migracii, najava, narachka so dodatok i suma, dvojno prakjanje, naplata, restart i nedozvoleni shifri. Lokalnata postoechka baza e proverena so sporedba na site redovi pred/po migracijata i `PRAGMA foreign_key_check` / `integrity_check`.
+
+## Мои маси / Сите маси
+
+Над распоредот има две копчиња со број на маси. „Мои маси“ ги прикажува масите каде најавениот корисник има барем една активна, ненаплатена нарачка. „Сите маси“ ги прикажува сите активни маси, вклучувајќи слободни, за започнување нова нарачка. По наплата масата исчезнува од „Мои маси“. Ако два келнери имаат активни нарачки на иста маса, таа се појавува кај двајцата. Прикажаната сума е вкупната ненаплатена сума на масата. Изборот се памети по корисник во прелистувачот; при прва употреба се прикажуваат сите маси. Статусите и сопственоста се освежуваат преку постоечкото известување во живо.
+
+Промена по commit `7215095`: додаден избор Мои маси / Сите маси, серверско определување на сопственоста од најавената сесија и проверки со два келнери и заедничка маса.
