@@ -60,7 +60,7 @@ Smetkite se vo lokalnata databaza. GitHub ja prenesuva aplikacijata, ne SQLite f
 ### Menadzer i direktor
 
 - Menadzerot ima pregled, masi/narachki i cenovnik.
-- Direktorot ima istite funkcii i upravuvanje so korisnichki smetki.
+- Direktorot ima pregled na masi, narachki i smetki, cenovnik i upravuvanje so korisnichki smetki/masi. Samo kelner dodava narachani redovi; kelner i menadzer evidentiraat naplata.
 - Menadzer/direktor moze da dodava masi i da dodava, menuva ili deaktivira artikli.
 
 ## Masi i cenovnik
@@ -79,38 +79,18 @@ Prikazhnite ceni se vo denari. Bazata gi cuva kako celi parichni stotinki. Istor
 
 Lokalniot SQLite fajl e `data/taverna.sqlite`. Vo DBeaver izberi **New Database Connection → SQLite**, pa za Database/File izberi toj fajl. Ako SQLite drajverot nedostiga, dozvoli DBeaver Driver Manager da go instalira. Refresh hireshijata za da se pojavat tabelite.
 
-Tabelite:
+Tabelite sega go sledat dogovoreniot PER model. Celosniot pregled e vo [docs/PER-SCHEMA.md](docs/PER-SCHEMA.md).
 
-| Tabela | Znachење |
-|---|---|
-| `Lice` | Korisnici, ime, najava, uloga, aktivnost; `staff_code` za kelner e tekst 001–099 (tri cifri), so edinstvenost i DB trigger validacija |
-| `Artikl` | Zaednichka osnovna tabela: `id`, `code`, `name`, `category`, `price_minor`, `active` |
-| `Kujna` | Jadenja: `id` povrzan so Artikl, edinstvena `code` 800–899 |
-| `Shank` | Pijalaci: `id` povrzan so Artikl, edinstvena `code` 501–599 |
-| `Dodatok` | Dodatoci: `id` povrzan so Artikl, edinstvena `code` 200–299 |
-| `Masa` | `table_type` O/K/P, `table_number` 1–99; edinstvena kombinacija, prikaz kako O1 |
-| `Narachka` | `table_id` → Masa, `waiter_id` → Lice, vreme, status, `total_minor`, `paid_at`, idempotency key |
-| `StavkaNaNarachka` | `order_id` → Narachka, `product_id` → Artikl, reden broj, kolichina, zachuvani ime/cena/shifra, zabeleshka |
-| `DodatokNaStavka` | `order_item_id` → StavkaNaNarachka, `product_id` → Dodatok, kolichina po edinica i zachuvani ime/cena/shifra |
-| `Naplata` | Masa, vraboten shto naplatil, iznos i vreme |
-| `schema_migrations` | Izvrsheni migracii |
+- Lice, Kelner, Menager, Direktor: edna pozicija po lice, so nasledeni kluchevi.
+- Article, Kujna, Shank, Dodatok: eden podtip po artikl i dogovorenite opsezi na shifri.
+- Masa, Smetka, Narachka, DodatokNaNarachka i Naplata.
+- Eksplicitni relacii: Izbira, Pristap, MenuvaDirektorMasa, Dodal, Pregled, MenuvaMasaNarachka, PovekjeNarachki, Prikazuva, ImaDodatok i SeOdnesuvaNaDodatok.
 
-**ID i shifra se razlichni.** Na primer, artiklot so vnatreshno `id=1` mozhe da ima `code=800`; kelner so `id=1` ima `staff_code='001'`. Relaciite koristat ID, a kelnerot gi gleda shifrite. O1, K1 i P1 imaat razlichni ID-a.
+Narachka sega e **eden narachan artikl**. Smetka gi sobira site redovi na masata do naplata. Dodatocite se povrzani so konkretna Narachka i nivnata kolichina e po edinica na glavniot artikl. Site ceni vo bazata se celi MKD stotinki.
 
-Imeto, cenata i aktivnosta za Kujna/Shank/Dodatok se zachuvani ednash vo Artikl. Podtipovite avtomatski se popolnuvaat so trigger pri dodavanje artikl preku aplikacijata ili vo Artikl. Za pregled so site polinja, vo DBeaver otvori **Views → KujnaPregled / ShankPregled / DodatokPregled**. Tie prikazhuvaat `id`, `shifra`, `ime`, `cena_stotinki`, `aktiven`. Za ceni vo denari:
+MasaPregled gi presmetuva SlobodnaZafatena i TekovnaCena. SmetkaPregled prikazhuva datum, vreme i traenje. Vo aplikacijata pregledot na smetkite e dostapen samo za menadzer/direktor. Pod sekoj narachan red kelnerite go gledaat imeto na kolegata shto go dodal. Najavata, slikite i latinichno/kirilichno prebaruvanje prodolzhuvaat da rabotat.
 
-```sql
-SELECT id, shifra, ime, cena_stotinki / 100.0 AS cena_MKD, aktiven
-FROM KujnaPregled;
-```
-
-Cenite/iminjata/aktivnosta se menuvaat vo **Cenovnik** vo aplikacijata ili vo Artikl. Pri direktno menuvaње vo DBeaver vkluchi SQLite foreign-key enforcement; aplikacijata go vkluchuva na sekoja konekcija. Kategorijata ne se menuva na postoechki artikl; deaktiviraj go i kreiraj nov. Starite podatoci se zachuvani vo `Arhiva_*` tabelite i ne se koristat za novi narachki.
-
-Po migracijata vo DBeaver selektiraj **taverna.sqlite** i pritisni **F5**. Stari otvoreni tabovi so angliski iminja zatvori gi i otvori gi novite tabeli.
-
-SQLite stranskite kluchevi i CHECK/UNIQUE ogranichuvanjata validiraat relacii, opsezi, kolichini i sifri. Narachkata, stavkite, dodatocite i vkupnata suma se zachuvuvaat vo transakcija. Serverot sam ja presmetuva sumata.
-
-Vo DBeaver postoeshe i aktivna PostgreSQL konekcija `localhost:5432/hospital_db`, no nejzinata `public` schema nemashe tabeli. Ne e doprena; aplikacijata koristi SQLite za da ostane vo tehnologijata na postoechkiot proekt.
+Vo DBeaver otvori **taverna.sqlite**, pritisni **F5**, pa Tables. Za dijagram selektiraj gi domenskite tabeli i otvori **View Diagram / ER Diagram**. Views sodrzhi MasaPregled, SmetkaPregled, NarachkaPregled i kataloshkite pregledi. Postoechkata PostgreSQL hospital_db e odvoena od aplikacijata.
 
 ## Telefon i lokalna mreza
 
@@ -166,3 +146,9 @@ Proverka na imenovanata shema: `node verify-schema.mjs`. Koristi posebna privrem
 По commit `5c63052`: шифрите се помали и сиви; името и цената остануваат истакнати. За пребарување се користи исто правило во прелистувачот и серверот: латиница и кирилица, големи/мали букви, sh/ш, ch/ч, zh/ж и повторени букви. `espreso`, `espresso` и `еспресо` го наоѓаат „Еспресо“. Ова не е превод: различни зборови без заедничка транслитерација не се сметаат за исти.
 
 Секој артикл има локална SVG илустрација, со посебни илустрации за почетните јадења, пијалаци и додатоци, и општа илустрација за нови артикли. Менаџерот/директорот во Ценовник може да избере „Смени слика“ и да прикачи PNG, JPEG, WebP или GIF до 1 MB. „Врати илустрација“ ја отстранува фотографијата. Фотографиите се локални податоци во Artikl.image_data, со image_version за освежување; не се испраќаат на надворешен сервис или GitHub. На друг компјутер се прикажуваат локалните илустрации додека не се внесат свои фотографии. Миграција 005 ги додава полињата еднаш при npm start, со зачувување на постоечките артикли и нарачки.
+
+## PER миграција — по commit `530a302`
+
+Миграцијата 006 го применува договорениот модел и автоматски прави SQLite backup со наставка `.before-per-...sqlite` покрај базата пред промената. Се зачувуваат сметките, хашираните лозинки, артиклите/сликите, количините, забелешките, историските цени и наплатите. Старите групи на нарачки се пренесуваат во нарачани редови во Narachka; Prakanje ги групира редовите од едно поднесување и спречува двојно зачувување. Старите наплатени нарачки се групираат во Smetka според масата и моментот на наплата. Ако историските суми не се совпаѓаат или наплатите се двосмислени, миграцијата се поништува.
+
+Проверки: `node verify-schema.mjs` и `node verify-per.mjs`. Вториот тест проверува споделена маса, повеќе артикли, автор по ставка, датуми недостапни за келнер, M:N директор–маса, историски цени, паралелни нарачки, повторна наплата, релации и restart. Миграцијата дополнително е проверена врз копија од постоечката локална база.
